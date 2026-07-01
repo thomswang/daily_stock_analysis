@@ -485,6 +485,116 @@ class BacktestSummary(Base):
     )
 
 
+class PredictionModel(Base):
+    """已训练并持久化的走势预测模型。
+
+    设计参考 invest_dojo 的 models/model_versions 思路（版本化 + 元数据 + 指标），
+    但把模型参数直接以 JSON 存入 params_json 列，省去 MinIO/文件系统依赖，
+    契合本项目 SQLite 单机部署的规模。
+
+    模型本体极小（n_features 个权重 + 偏置 + 标准化 mean/std），JSON 足够。
+    通过 is_active 标记当前用于线上预测的版本，支持一键回滚到历史版本。
+    """
+
+    __tablename__ = 'prediction_models'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 模型标识与版本
+    name = Column(String(64), nullable=False, index=True, default='trend_lr')
+    version = Column(String(32), nullable=False)  # 训练时间戳，如 20260701_113000
+    algorithm = Column(String(48), nullable=False, default='logistic_regression_gd')
+
+    # 训练范围与样本
+    trained_symbols_json = Column(Text)  # 参与训练的股票代码列表（JSON）
+    symbol_count = Column(Integer, default=0)
+    train_start_date = Column(Date)
+    train_end_date = Column(Date)
+    horizon_days = Column(Integer, default=1)  # 标签口径：预测未来第几日方向
+
+    # 特征与模型参数（JSON）
+    feature_names_json = Column(Text)  # 特征顺序（JSON）
+    params_json = Column(Text, nullable=False)  # {weights, bias, mean, std}
+
+    # 评估指标
+    train_samples = Column(Integer, default=0)
+    valid_samples = Column(Integer, default=0)
+    train_accuracy = Column(Float)
+    valid_accuracy = Column(Float)
+    baseline_accuracy = Column(Float)
+    metrics_json = Column(Text)  # 完整指标快照（JSON）
+
+    # 生命周期
+    is_active = Column(Boolean, nullable=False, default=False, index=True)
+    notes = Column(Text)
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        UniqueConstraint('name', 'version', name='uix_prediction_model_name_version'),
+        Index('ix_prediction_model_name_active', 'name', 'is_active'),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PredictionModel(name={self.name}, version={self.version}, "
+            f"active={self.is_active}, valid_acc={self.valid_accuracy})>"
+        )
+
+
+class PredictionRecord(Base):
+    """单次走势预测的落库记录 + 到期后回填的真实结果（数据闭环）。
+
+    - 预测发生时写入：方向、概率、置信度、期望收益、基准价、模型来源等
+    - 到期后由评估任务回填：实际收盘、实际收益、实际方向、是否命中
+    用于「历史预测 / 准确率」看板，量化模型表现，是模型再训练的样本来源。
+
+    准确率口径：以预测方向（direction）对比 as_of_date → as_of_date+horizon 交易日
+    的实际收益方向（涨=up/跌=down），一致记命中。
+    """
+
+    __tablename__ = 'prediction_records'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    code = Column(String(16), nullable=False, index=True)
+    stock_name = Column(String(64))
+    as_of_date = Column(Date, nullable=False, index=True)  # 预测所基于的最新数据日期
+    horizon_days = Column(Integer, nullable=False, default=5)
+
+    # 预测输出
+    direction = Column(String(8), nullable=False)  # up/down
+    up_probability = Column(Float)
+    confidence = Column(Float)
+    expected_return_pct = Column(Float)
+    last_close = Column(Float)  # 基准价（as_of_date 收盘）
+
+    # 模型来源
+    model_source = Column(String(16))  # trained/on_the_fly
+    model_name = Column(String(64))
+    model_version = Column(String(32))
+
+    # 评估回填
+    eval_status = Column(String(16), nullable=False, default='pending', index=True)  # pending/evaluated/insufficient
+    actual_close = Column(Float)
+    actual_return_pct = Column(Float)
+    actual_direction = Column(String(8))  # up/down
+    is_correct = Column(Boolean)
+    evaluated_at = Column(DateTime)
+
+    created_at = Column(DateTime, default=datetime.now, index=True)
+
+    __table_args__ = (
+        Index('ix_prediction_record_code_date', 'code', 'as_of_date'),
+        Index('ix_prediction_record_status_created', 'eval_status', 'created_at'),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PredictionRecord(code={self.code}, as_of={self.as_of_date}, "
+            f"dir={self.direction}, status={self.eval_status}, correct={self.is_correct})>"
+        )
+
+
 class PortfolioAccount(Base):
     """Portfolio account metadata."""
 

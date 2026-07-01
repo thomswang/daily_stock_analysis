@@ -14,6 +14,8 @@ import './App.css';
 
 const HomePage = lazy(() => import('./pages/HomePage'));
 const BacktestPage = lazy(() => import('./pages/BacktestPage'));
+const PredictionPage = lazy(() => import('./pages/PredictionPage'));
+const PredictionHistoryPage = lazy(() => import('./pages/PredictionHistoryPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const LoginPage = lazy(() => import('./pages/LoginPage'));
 const NotFoundPage = lazy(() => import('./pages/NotFoundPage'));
@@ -84,6 +86,8 @@ const AppContent: React.FC = () => {
         <Route path="/portfolio" element={<PortfolioPage />} />
         <Route path="/decision-signals" element={<DecisionSignalsPage />} />
         <Route path="/screening" element={<StockScreeningPage />} />
+        <Route path="/prediction" element={<PredictionPage />} />
+        <Route path="/prediction/history" element={<PredictionHistoryPage />} />
         <Route path="/backtest" element={<BacktestPage />} />
         <Route path="/alerts" element={<AlertsPage />} />
         <Route path="/usage" element={<TokenUsagePage />} />

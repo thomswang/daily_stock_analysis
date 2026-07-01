@@ -23,6 +23,7 @@ from api.v1.endpoints import (
     history,
     intelligence,
     portfolio,
+    prediction,
     stocks,
     system_config,
     usage,
@@ -66,6 +67,12 @@ router.include_router(
     backtest.router,
     prefix="/backtest",
     tags=["Backtest"]
+)
+
+router.include_router(
+    prediction.router,
+    prefix="/prediction",
+    tags=["Prediction"]
 )
 
 router.include_router(
