@@ -34,15 +34,37 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 
-# 特征名称（顺序与特征矩阵列一致），中文含义供前端展示
+# 特征名称（顺序与特征矩阵列一致），中文含义供前端展示。
+# 分六大类：趋势 / 动量 / 摆动 / 波动率 / K线形态 / 量价，全部仅用 OHLCV 派生、
+# 严格回看（防未来函数）、并做无量纲归一化。
 FEATURE_LABELS: Dict[str, Dict[str, str]] = {
+    # ── 趋势（均线结构）──
     "ma5_dev": {"zh": "5日均线偏离度", "en": "MA5 deviation"},
     "ma10_dev": {"zh": "10日均线偏离度", "en": "MA10 deviation"},
+    "ma20_dev": {"zh": "20日均线偏离度", "en": "MA20 deviation"},
+    "ma_trend": {"zh": "均线多空排列(MA5-MA20)", "en": "MA5-MA20 trend"},
+    # ── 动量 ──
     "prev_return": {"zh": "昨日涨跌幅", "en": "Prev-day return"},
     "momentum_5": {"zh": "5日动量", "en": "5-day momentum"},
-    "volume_ratio": {"zh": "成交量比率", "en": "Volume ratio"},
+    "momentum_10": {"zh": "10日动量", "en": "10-day momentum"},
+    "momentum_20": {"zh": "20日动量", "en": "20-day momentum"},
+    # ── 摆动指标（超买超卖）──
     "rsi_14": {"zh": "RSI(14)", "en": "RSI(14)"},
+    "stoch_k_14": {"zh": "随机指标%K(14)", "en": "Stochastic %K(14)"},
+    "boll_b_20": {"zh": "布林带%B(20)", "en": "Bollinger %B(20)"},
     "macd_hist": {"zh": "MACD 柱", "en": "MACD histogram"},
+    # ── 波动率 ──
+    "volatility_20": {"zh": "20日波动率", "en": "20-day volatility"},
+    "atr_14": {"zh": "真实波幅ATR(14)", "en": "ATR(14) / price"},
+    "range_pct": {"zh": "当日振幅", "en": "Intraday range"},
+    # ── K线形态 ──
+    "body_ratio": {"zh": "K线实体占比", "en": "Candle body ratio"},
+    "close_position": {"zh": "收盘位置(当日区间)", "en": "Close position in range"},
+    "gap_open": {"zh": "跳空幅度", "en": "Opening gap"},
+    # ── 量价 ──
+    "volume_ratio": {"zh": "成交量比率", "en": "Volume ratio"},
+    "volume_trend": {"zh": "量能趋势(5/20)", "en": "Volume trend (5/20)"},
+    "pv_corr_10": {"zh": "10日量价相关性", "en": "10-day price-volume corr"},
 }
 FEATURE_ORDER = list(FEATURE_LABELS.keys())
 
@@ -131,24 +153,76 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 
     df 需包含列：date, open, high, low, close, volume
     返回：包含 FEATURE_ORDER 各列 + close + date 的 DataFrame（已 dropna）
+
+    所有因子仅用当日及更早数据（rolling/shift 回看），保证防未来函数；
+    并做无量纲归一化（比例/相对价格/0~1 区间），避免量纲干扰梯度下降。
     """
     data = df.copy()
     data = data.sort_values("date").reset_index(drop=True)
     close = data["close"].astype(float)
+    open_ = data["open"].astype(float) if "open" in data else close
+    high = data["high"].astype(float) if "high" in data else close
+    low = data["low"].astype(float) if "low" in data else close
     volume = data["volume"].astype(float) if "volume" in data else pd.Series(np.nan, index=data.index)
+
+    ret = close.pct_change()
+    prev_close = close.shift(1)
 
     ma5 = close.rolling(5, min_periods=5).mean()
     ma10 = close.rolling(10, min_periods=10).mean()
+    ma20 = close.rolling(20, min_periods=20).mean()
+    std20 = close.rolling(20, min_periods=20).std()
     vol_ma5 = volume.rolling(5, min_periods=5).mean()
+    vol_ma20 = volume.rolling(20, min_periods=20).mean()
+
+    # 当日区间/实体（防止除零：用 NaN 兜底，最后 dropna）
+    hl = (high - low).replace(0, np.nan)
+
+    # 随机指标 %K（价格在近 14 日高低区间的位置）
+    low14 = low.rolling(14, min_periods=14).min()
+    high14 = high.rolling(14, min_periods=14).max()
+    stoch_range = (high14 - low14).replace(0, np.nan)
+
+    # 布林带 %B（价格在 ±2σ 通道内的相对位置）
+    boll_upper = ma20 + 2.0 * std20
+    boll_lower = ma20 - 2.0 * std20
+    boll_range = (boll_upper - boll_lower).replace(0, np.nan)
+
+    # 真实波幅 ATR(14)
+    tr = pd.concat(
+        [(high - low), (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    atr14 = tr.rolling(14, min_periods=14).mean()
 
     feats = pd.DataFrame({"date": data["date"], "close": close})
+    # ── 趋势 ──
     feats["ma5_dev"] = (close - ma5) / ma5
     feats["ma10_dev"] = (close - ma10) / ma10
-    feats["prev_return"] = close.pct_change()
+    feats["ma20_dev"] = (close - ma20) / ma20
+    feats["ma_trend"] = (ma5 - ma20) / ma20
+    # ── 动量 ──
+    feats["prev_return"] = ret
     feats["momentum_5"] = close.pct_change(periods=5)
-    feats["volume_ratio"] = (volume / vol_ma5) - 1.0
+    feats["momentum_10"] = close.pct_change(periods=10)
+    feats["momentum_20"] = close.pct_change(periods=20)
+    # ── 摆动指标 ──
     feats["rsi_14"] = _rsi(close, 14) / 100.0  # 归一到 ~0..1
+    feats["stoch_k_14"] = (close - low14) / stoch_range
+    feats["boll_b_20"] = (close - boll_lower) / boll_range
     feats["macd_hist"] = _macd_hist(close) / close  # 相对价格归一
+    # ── 波动率 ──
+    feats["volatility_20"] = ret.rolling(20, min_periods=20).std()
+    feats["atr_14"] = atr14 / close
+    feats["range_pct"] = (high - low) / close
+    # ── K线形态 ──
+    feats["body_ratio"] = (close - open_) / hl
+    feats["close_position"] = (close - low) / hl
+    feats["gap_open"] = (open_ - prev_close) / prev_close
+    # ── 量价 ──
+    feats["volume_ratio"] = (volume / vol_ma5) - 1.0
+    feats["volume_trend"] = (vol_ma5 / vol_ma20) - 1.0
+    feats["pv_corr_10"] = ret.rolling(10, min_periods=10).corr(volume.pct_change())
 
     feats = feats.replace([np.inf, -np.inf], np.nan)
     feats = feats.dropna(subset=FEATURE_ORDER + ["close"]).reset_index(drop=True)
