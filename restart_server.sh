@@ -11,8 +11,12 @@
 #   ./restart_server.sh                 # 默认端口 8020，打包前端后重启
 #   ./restart_server.sh --port 8000     # 指定端口
 #   ./restart_server.sh --no-build      # 跳过前端打包，仅重启后端
+#   ./restart_server.sh --reinstall     # 强制重装前端依赖后再打包
 #   ./restart_server.sh --stop          # 只停止，不启动
 #   ./restart_server.sh --foreground    # 前台运行（Ctrl+C 退出）
+#
+# 依赖安装策略：默认按 package-lock.json 内容哈希判断，仅在依赖缺失或清单
+# 变化时自动重装（npm ci）；未变化则跳过，保证重启快速。
 #
 # 兼容 Windows(Git Bash) 与 Linux/macOS。
 # =====================================================================
@@ -25,12 +29,14 @@ HOST="0.0.0.0"
 DO_BUILD=1
 STOP_ONLY=0
 FOREGROUND=0
+FORCE_REINSTALL=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --port) PORT="$2"; shift 2 ;;
     --host) HOST="$2"; shift 2 ;;
     --no-build) DO_BUILD=0; shift ;;
+    --reinstall) FORCE_REINSTALL=1; shift ;;
     --stop) STOP_ONLY=1; shift ;;
     --foreground|--fg) FOREGROUND=1; shift ;;
     -h|--help)
@@ -119,8 +125,53 @@ stop_service() {
   fi
 }
 
+# ── 确保前端依赖已安装（依赖清单变化时自动重装）──────────────
+_file_hash() {
+  # 跨平台取文件内容哈希：优先 sha1sum，退回 git hash-object / cksum
+  if command -v sha1sum >/dev/null 2>&1; then
+    sha1sum "$1" 2>/dev/null | awk '{print $1}'
+  elif command -v git >/dev/null 2>&1; then
+    git hash-object "$1" 2>/dev/null
+  else
+    cksum "$1" 2>/dev/null | awk '{print $1}'
+  fi
+}
+
+ensure_frontend_deps() {
+  local web_dir="$SCRIPT_DIR/apps/dsa-web"
+  local lock="$web_dir/package-lock.json"
+  [[ -f "$lock" ]] || lock="$web_dir/package.json"
+  local stamp="$web_dir/node_modules/.dsa-deps-hash"
+
+  local want have reason
+  want="$(_file_hash "$lock")"
+  have="$(cat "$stamp" 2>/dev/null || true)"
+
+  if [[ ! -d "$web_dir/node_modules" \
+        || ! -e "$web_dir/node_modules/.bin/tsc" \
+        || ! -e "$web_dir/node_modules/.bin/vite" ]]; then
+    reason="依赖缺失"
+  elif [[ "$FORCE_REINSTALL" -eq 1 ]]; then
+    reason="--reinstall 强制重装"
+  elif [[ -n "$want" && "$want" != "$have" ]]; then
+    reason="依赖清单($(basename "$lock"))已变化"
+  else
+    return 0  # 依赖齐全且未变化 → 跳过，秒过
+  fi
+
+  log "前端依赖需要安装（$reason），开始安装（首次/更新较慢）..."
+  if [[ -f "$web_dir/package-lock.json" ]]; then
+    ( cd "$web_dir" && npm ci )
+  else
+    ( cd "$web_dir" && npm install )
+  fi
+  echo "$want" > "$stamp"   # 记录本次安装对应的依赖清单哈希
+  log "前端依赖安装完成。"
+}
+
 # ── 打包前端 ──────────────────────────────────────────────
 build_frontend() {
+  ensure_frontend_deps
   log "开始打包前端（apps/dsa-web -> static/）..."
   ( cd "$SCRIPT_DIR/apps/dsa-web" && npm run build )
   log "前端打包完成。"
