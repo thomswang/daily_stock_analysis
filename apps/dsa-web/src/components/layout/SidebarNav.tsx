@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, Gauge, History, Home, LineChart, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, FlaskConical, Gauge, History, Home, LineChart, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { ALPHASIFT_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, alphasiftApi } from '../../api/alphasift';
 import { useAuth } from '../../contexts/AuthContext';
@@ -35,6 +35,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
   { key: 'prediction', labelKey: 'layout.nav.prediction', to: '/prediction', icon: LineChart },
   { key: 'prediction-history', labelKey: 'layout.nav.predictionHistory', to: '/prediction/history', icon: History },
+  { key: 'prediction-backtest', labelKey: 'layout.nav.predictionBacktest', to: '/prediction/backtest', icon: FlaskConical },
   { key: 'backtest', labelKey: 'layout.nav.backtest', to: '/backtest', icon: BarChart3 },
   { key: 'alerts', labelKey: 'layout.nav.alerts', to: '/alerts', icon: Bell },
   { key: 'usage', labelKey: 'layout.nav.usage', to: '/usage', icon: Gauge },

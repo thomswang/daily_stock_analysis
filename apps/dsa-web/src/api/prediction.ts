@@ -2,6 +2,8 @@ import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
   PredictionAccuracyResponse,
+  PredictionBacktestRequest,
+  PredictionBacktestResponse,
   PredictionEvaluateResponse,
   PredictionHistoryParams,
   PredictionHistoryResponse,
@@ -58,5 +60,26 @@ export const predictionApi = {
       { timeout: 120000 },
     );
     return toCamelCase<PredictionEvaluateResponse>(response.data);
+  },
+
+  /** Run a walk-forward backtest of the trend prediction model. */
+  backtest: async (params: PredictionBacktestRequest): Promise<PredictionBacktestResponse> => {
+    const requestData: Record<string, unknown> = { code: params.code.trim() };
+    if (params.horizonDays != null) requestData.horizon_days = params.horizonDays;
+    if (params.lookbackDays != null) requestData.lookback_days = params.lookbackDays;
+    if (params.retrainEvery != null) requestData.retrain_every = params.retrainEvery;
+    if (params.minTrain != null) requestData.min_train = params.minTrain;
+    if (params.threshold != null) requestData.threshold = params.threshold;
+    if (params.allowShort != null) requestData.allow_short = params.allowShort;
+    if (params.refresh != null) requestData.refresh = params.refresh;
+    if (params.startDate) requestData.start_date = params.startDate;
+    if (params.endDate) requestData.end_date = params.endDate;
+
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/prediction/backtest',
+      requestData,
+      { timeout: 120000 },
+    );
+    return toCamelCase<PredictionBacktestResponse>(response.data);
   },
 };

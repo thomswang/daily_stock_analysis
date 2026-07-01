@@ -99,6 +99,60 @@ export interface PredictionHistoryParams {
   offset?: number;
 }
 
+export interface PredictionBacktestRequest {
+  code: string;
+  horizonDays?: number;
+  lookbackDays?: number;
+  retrainEvery?: number;
+  minTrain?: number;
+  threshold?: number;
+  allowShort?: boolean;
+  refresh?: boolean;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface BacktestPoint {
+  date: string;
+  upProbability: number;
+  direction: 'up' | 'down';
+  actualReturnPct: number;
+  correct: boolean;
+}
+
+export interface EquityPoint {
+  date: string;
+  strategy: number;
+  benchmark: number;
+}
+
+export interface PredictionBacktestResponse {
+  stockCode: string;
+  stockName: string | null;
+  horizonDays: number;
+  lookbackDays: number;
+  retrainEvery: number;
+  threshold: number;
+  allowShort: boolean;
+  startDate: string;
+  endDate: string;
+  nPredictions: number;
+  correct: number;
+  accuracy: number;
+  baselineAccuracy: number;
+  upPrecision: number | null;
+  predUpCount: number;
+  actualUpRatio: number;
+  nTrades: number;
+  winRate: number | null;
+  strategyReturnPct: number;
+  benchmarkReturnPct: number;
+  maxDrawdownPct: number;
+  equityCurve: EquityPoint[];
+  points: BacktestPoint[];
+  disclaimer: string;
+}
+
 export interface PredictionResponse {
   stockCode: string;
   stockName: string | null;

@@ -19,6 +19,8 @@ from fastapi import APIRouter, HTTPException, Query
 from api.v1.schemas.common import ErrorResponse
 from api.v1.schemas.prediction import (
     PredictionAccuracyResponse,
+    PredictionBacktestRequest,
+    PredictionBacktestResponse,
     PredictionEvaluateRequest,
     PredictionEvaluateResponse,
     PredictionHistoryResponse,
@@ -103,6 +105,53 @@ def prediction_accuracy(
     from src.repositories.prediction_record_repo import PredictionRecordRepository
 
     return PredictionAccuracyResponse(**PredictionRecordRepository().accuracy_stats(code=code))
+
+
+@router.post(
+    "/backtest",
+    response_model=PredictionBacktestResponse,
+    responses={
+        200: {"description": "回测完成"},
+        400: {"description": "数据不足或参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="走势预测回测",
+    description=(
+        "对单只股票做滚动步进(walk-forward)回测：每隔若干交易日仅用当时可见的历史"
+        "数据重训并预测方向，严格防未来函数，给出逐日方向命中率与策略资金曲线。"
+        "仅供技术研究，不构成投资建议。"
+    ),
+)
+def prediction_backtest(request: PredictionBacktestRequest) -> PredictionBacktestResponse:
+    from src.services.prediction_backtest_service import PredictionBacktestService
+
+    try:
+        result = PredictionBacktestService().run(
+            request.code.strip(),
+            start_date=request.start_date,
+            end_date=request.end_date,
+            horizon_days=request.horizon_days,
+            lookback_days=request.lookback_days,
+            retrain_every=request.retrain_every,
+            min_train=request.min_train,
+            threshold=request.threshold,
+            allow_short=request.allow_short,
+            refresh=request.refresh,
+        )
+        return PredictionBacktestResponse(**result)
+    except PredictionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "backtest_failed", "message": str(exc)},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"预测回测失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"预测回测失败: {str(exc)}"},
+        )
 
 
 @router.post(

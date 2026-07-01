@@ -110,6 +110,60 @@ class PredictionEvaluateResponse(BaseModel):
     errors: int = 0
 
 
+class PredictionBacktestRequest(BaseModel):
+    code: str = Field(..., description="股票代码，如 600519、00700、AAPL")
+    horizon_days: int = Field(5, ge=1, le=20, description="预测/评估的未来交易日数")
+    lookback_days: int = Field(500, ge=120, le=1500, description="用于回测的历史回溯天数")
+    retrain_every: int = Field(5, ge=1, le=60, description="每隔多少个交易日重训一次模型")
+    min_train: int = Field(60, ge=30, le=500, description="首次预测前至少积累的样本数")
+    threshold: float = Field(0.5, ge=0.05, le=0.95, description="判定看涨的概率阈值")
+    allow_short: bool = Field(False, description="资金曲线是否允许做空（看跌时反向）")
+    refresh: bool = Field(True, description="是否联网刷新缓存以补齐最新K线")
+    start_date: Optional[str] = Field(None, description="回测评估起始日 YYYY-MM-DD（含）")
+    end_date: Optional[str] = Field(None, description="回测评估结束日 YYYY-MM-DD（含）")
+
+
+class BacktestPoint(BaseModel):
+    date: str
+    up_probability: float
+    direction: Literal["up", "down"]
+    actual_return_pct: float
+    correct: bool
+
+
+class EquityPoint(BaseModel):
+    date: str
+    strategy: float
+    benchmark: float
+
+
+class PredictionBacktestResponse(BaseModel):
+    stock_code: str
+    stock_name: Optional[str] = None
+    horizon_days: int
+    lookback_days: int
+    retrain_every: int
+    threshold: float
+    allow_short: bool
+    start_date: str
+    end_date: str
+    n_predictions: int
+    correct: int
+    accuracy: float = Field(..., description="逐日方向命中率 0~1")
+    baseline_accuracy: float = Field(..., description="基线：始终猜多数类的命中率")
+    up_precision: Optional[float] = Field(None, description="预测看涨时的实际上涨占比")
+    pred_up_count: int
+    actual_up_ratio: float
+    n_trades: int
+    win_rate: Optional[float] = None
+    strategy_return_pct: float
+    benchmark_return_pct: float
+    max_drawdown_pct: float
+    equity_curve: List[EquityPoint] = Field(default_factory=list)
+    points: List[BacktestPoint] = Field(default_factory=list)
+    disclaimer: str
+
+
 class PredictionResponse(BaseModel):
     stock_code: str
     stock_name: Optional[str] = None
