@@ -89,3 +89,4 @@ static/
 /apps/dsa-desktop/node_modules/
 docs/specs/
 .server.pid
+data/backfill_progress.json

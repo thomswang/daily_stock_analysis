@@ -68,7 +68,7 @@ def _setup_logging(debug: bool = False) -> None:
 
 
 def _resolve_symbols(args: argparse.Namespace) -> List[str]:
-    """解析训练股票列表：--symbols 优先，其次 --from-watchlist。"""
+    """解析训练股票列表：--symbols > --from-watchlist > --all。"""
     if args.symbols:
         return [c.strip() for c in args.symbols.split(",") if c.strip()]
     if args.from_watchlist:
@@ -81,9 +81,19 @@ def _resolve_symbols(args: argparse.Namespace) -> List[str]:
             pass
         codes = list(getattr(config, "stock_list", []) or [])
         if not codes:
-            raise SystemExit("自选股列表为空：请在 .env 配置 STOCK_LIST，或改用 --symbols")
+            raise SystemExit("自选股列表为空：请在 .env 配置 STOCK_LIST，或改用 --symbols/--all")
         return codes
-    raise SystemExit("请通过 --symbols 或 --from-watchlist 指定训练股票")
+    if getattr(args, "all", False):
+        # 复用回填工具的全市场代码清单加载器（读 stocks.index.json）
+        from src.services.history_backfill_service import HistoryBackfillService
+
+        codes = HistoryBackfillService().load_all_cn_codes(index_path=args.index_path)
+        if args.limit:
+            codes = codes[: args.limit]
+        if not codes:
+            raise SystemExit("未能载入全市场代码清单，请检查 stocks.index.json 或用 --symbols")
+        return codes
+    raise SystemExit("请通过 --symbols / --from-watchlist / --all 指定训练股票")
 
 
 def _print_summary(summary: dict) -> None:
@@ -164,6 +174,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--symbols", type=str, help="训练股票代码，逗号分隔，如 600519,000001")
     parser.add_argument("--from-watchlist", action="store_true", help="使用 .env 的 STOCK_LIST 作为训练股票")
+    parser.add_argument("--all", action="store_true", help="全市场 A 股（读 stocks.index.json）")
+    parser.add_argument("--index-path", type=str, default=None, help="stocks.index.json 路径（默认自动查找）")
+    parser.add_argument("--limit", type=int, default=None, help="仅取前 N 只训练（试跑/控内存）")
     parser.add_argument("--lookback", type=int, default=500, help="每只股票回溯天数（默认 500）")
     parser.add_argument("--name", type=str, default="trend_lr", help="模型名（默认 trend_lr）")
     parser.add_argument("--epochs", type=int, default=400, help="训练轮数（默认 400）")

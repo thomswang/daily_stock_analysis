@@ -14,7 +14,7 @@ from datetime import date
 from typing import Optional, List, Dict, Any
 
 import pandas as pd
-from sqlalchemy import and_, desc, select
+from sqlalchemy import and_, desc, func, select
 
 from src.storage import DatabaseManager, StockDaily
 
@@ -158,6 +158,28 @@ class StockRepository:
                 .limit(1)
             ).scalar_one_or_none()
             return row
+
+    def get_coverage(self, code: str) -> Dict[str, Any]:
+        """查询某股票在 stock_daily 里已存的最早/最晚日期与条数。
+
+        供历史回填的断点续传判定使用（DB 为数据真相源）。
+
+        Returns:
+            {"first": date|None, "last": date|None, "rows": int}
+        """
+        try:
+            with self.db.get_session() as session:
+                first, last, cnt = session.execute(
+                    select(
+                        func.min(StockDaily.date),
+                        func.max(StockDaily.date),
+                        func.count(),
+                    ).where(StockDaily.code == code)
+                ).one()
+            return {"first": first, "last": last, "rows": int(cnt or 0)}
+        except Exception as e:
+            logger.error(f"查询 {code} 数据覆盖范围失败: {e}")
+            return {"first": None, "last": None, "rows": 0}
 
     def get_forward_bars(self, *, code: str, analysis_date: date, eval_window_days: int) -> List[StockDaily]:
         """Return forward daily bars after analysis_date, up to eval_window_days."""
