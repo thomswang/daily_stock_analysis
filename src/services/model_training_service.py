@@ -6,7 +6,7 @@
 
 职责：把"训练"从预测请求链路里剥离出来，作为**可由用户掌控的离线任务**：
     命令行手动触发 / 定时触发 → 拉取(或复用缓存)多只股票日线
-    → 构造技术因子 + 打标签(次日涨跌) → 汇聚成一个大样本集
+    → 构造技术因子 + 打标签(未来 N 日方向, 默认 5 日) → 汇聚成一个大样本集
     → 训练一个**全局**逻辑回归模型 → 持久化 + 版本化(prediction_models 表)
     → 标记为激活版本，供预测服务直接加载推理
 
@@ -30,10 +30,13 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from src.services.prediction_service import (
+    DEFAULT_LABEL_HORIZON,
+    DEFAULT_LABEL_THRESHOLD,
     FEATURE_ORDER,
     PredictionError,
     _load_daily_df,
     build_features,
+    make_labels,
     train_model,
 )
 
@@ -61,8 +64,12 @@ class ModelTrainingService:
         lookback_days: int,
         *,
         refresh: bool,
+        horizon: int = DEFAULT_LABEL_HORIZON,
+        threshold: float = DEFAULT_LABEL_THRESHOLD,
     ) -> tuple[np.ndarray, np.ndarray, List[str], List[Any]]:
         """遍历股票，构造并汇聚 (X, y) 训练样本。
+
+        标签口径：未来 horizon 日方向（与预测/回测一致），末 horizon 行无标签。
 
         Returns:
             (X, y, used_symbols, all_dates)
@@ -92,19 +99,22 @@ class ModelTrainingService:
                 logger.warning("[train] %s 无数据，跳过", code)
                 continue
 
+            # TODO(第一阶段②·下次续做): 待指数日线回填后，这里改为
+            #   feats = build_features(df, market_df=<缓存的指数日线>)
+            #   以引入大盘/板块环境因子（详见 prediction_service.build_features 顶部 TODO）。
             feats = build_features(df)
-            if len(feats) < 30:
+            if len(feats) < max(30, horizon + 20):
                 logger.info("[train] %s 有效样本过少(%d)，跳过", code, len(feats))
                 continue
 
-            future_return = feats["close"].shift(-1) / feats["close"] - 1.0
-            y_all = (future_return > 0).astype(int)
-            # 最后一行无次日标签
-            X_parts.append(feats.iloc[:-1][FEATURE_ORDER].to_numpy(dtype=float))
-            y_parts.append(y_all.iloc[:-1].to_numpy())
-            all_dates.extend(feats.iloc[:-1]["date"].tolist())
+            # 未来 horizon 日方向标签；末 horizon 行无标签，剔除
+            y_all = make_labels(feats["close"], horizon=horizon, threshold=threshold)
+            usable = feats.iloc[:-horizon]
+            X_parts.append(usable[FEATURE_ORDER].to_numpy(dtype=float))
+            y_parts.append(y_all.iloc[:-horizon].to_numpy())
+            all_dates.extend(usable["date"].tolist())
             used_symbols.append(code)
-            logger.info("[train] %s 贡献样本 %d 条", code, len(feats) - 1)
+            logger.info("[train] %s 贡献样本 %d 条", code, len(usable))
 
         if not X_parts:
             raise ModelTrainingError(
@@ -124,6 +134,8 @@ class ModelTrainingService:
         epochs: int = 400,
         lr: float = 0.3,
         l2: float = 1e-3,
+        horizon: int = DEFAULT_LABEL_HORIZON,
+        threshold: float = DEFAULT_LABEL_THRESHOLD,
         set_active: bool = True,
         refresh: bool = True,
         notes: Optional[str] = None,
@@ -135,6 +147,8 @@ class ModelTrainingService:
             lookback_days: 每只股票的回溯天数
             model_name: 模型名（同名下按版本管理，新版本自动激活）
             epochs/lr/l2: 训练超参
+            horizon: 标签前瞻天数（预测"未来 horizon 日"方向，默认 5，与预测/回测一致）
+            threshold: 记为"看涨"所需的最小未来收益（默认 0=纯方向）
             set_active: 训练完成后是否设为激活版本（供预测使用）
             refresh: 是否联网刷新数据（False 则纯用本地缓存，适合离线补训）
             notes: 备注
@@ -146,14 +160,16 @@ class ModelTrainingService:
             raise ModelTrainingError("训练股票列表为空")
 
         lookback_days = int(max(120, min(lookback_days, 1200)))
+        horizon = int(max(1, min(horizon, 20)))
         started = datetime.now()
         logger.info(
-            "[train] 开始训练：模型=%s，股票=%d 只，回溯=%d 天，联网刷新=%s",
-            model_name, len(symbols), lookback_days, refresh,
+            "[train] 开始训练：模型=%s，股票=%d 只，回溯=%d 天，标签=未来%d日，联网刷新=%s",
+            model_name, len(symbols), lookback_days, horizon, refresh,
         )
 
         X, y, used_symbols, all_dates = self._collect_samples(
-            symbols, lookback_days, refresh=refresh
+            symbols, lookback_days, refresh=refresh,
+            horizon=horizon, threshold=threshold,
         )
 
         logger.info(
@@ -176,7 +192,7 @@ class ModelTrainingService:
             trained_symbols=used_symbols,
             train_start_date=_as_date(start_date),
             train_end_date=_as_date(end_date),
-            horizon_days=1,
+            horizon_days=horizon,
             metrics=metrics,
             set_active=set_active,
             notes=notes,

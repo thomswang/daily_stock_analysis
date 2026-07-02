@@ -65,8 +65,45 @@ FEATURE_LABELS: Dict[str, Dict[str, str]] = {
     "volume_ratio": {"zh": "成交量比率", "en": "Volume ratio"},
     "volume_trend": {"zh": "量能趋势(5/20)", "en": "Volume trend (5/20)"},
     "pv_corr_10": {"zh": "10日量价相关性", "en": "10-day price-volume corr"},
+    # ── 换手率（数据源直供，非 OHLCV 可派生，含流通盘信息）──
+    "turnover_norm": {"zh": "换手率(绝对)", "en": "Turnover rate"},
+    "turnover_rel": {"zh": "换手率相对20日均值", "en": "Turnover vs 20d avg"},
 }
 FEATURE_ORDER = list(FEATURE_LABELS.keys())
+
+# 数据源可能不提供的扩展特征：整列缺失时以 0(中性)填充，
+# 避免这些列的 NaN 把整只股票的样本在 dropna 时清空（兼容无换手率的兜底源）。
+_OPTIONAL_FEATURES = ("turnover_norm", "turnover_rel")
+
+# 标签口径（默认）：预测"未来 N 日"方向，而非噪声很大的"次日"。
+# N 日趋势信噪比更高；threshold 可要求"涨幅超过阈值"才记为看涨（默认 0=纯方向）。
+DEFAULT_LABEL_HORIZON = 5
+DEFAULT_LABEL_THRESHOLD = 0.0
+
+
+def make_labels(
+    close: pd.Series,
+    horizon: int = DEFAULT_LABEL_HORIZON,
+    threshold: float = DEFAULT_LABEL_THRESHOLD,
+) -> pd.Series:
+    """构造"未来 horizon 日方向"标签（防未来函数，末 horizon 行无标签=NaN）。
+
+        未来收益 = close[t+horizon] / close[t] - 1
+        label    = 1 if 未来收益 > threshold else 0
+
+    Args:
+        close: 收盘价序列（需按日期升序）
+        horizon: 前瞻交易日数（>=1）
+        threshold: 记为"看涨"所需的最小未来收益（0=只看方向）
+
+    Returns:
+        与 close 等长的 float Series；最后 horizon 行为 NaN（无法计算未来收益）。
+    """
+    horizon = int(max(1, horizon))
+    fwd_return = close.shift(-horizon) / close - 1.0
+    labels = (fwd_return > threshold).astype(float)
+    labels[fwd_return.isna()] = np.nan  # 末 horizon 行无未来数据，不可用于训练
+    return labels
 
 
 class PredictionError(Exception):
@@ -157,6 +194,23 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     所有因子仅用当日及更早数据（rolling/shift 回看），保证防未来函数；
     并做无量纲归一化（比例/相对价格/0~1 区间），避免量纲干扰梯度下降。
     """
+    # ============================================================
+    # TODO(准确率优化 · 第一阶段②：大盘/板块环境特征) —— 下次对话续做
+    # 现状：第一阶段①(改标签→未来5日方向)已完成；②因本地缺指数日线暂缓。
+    # 前置：先回填指数日线（沪深300 000300 / 上证 000001 / 创业板 399006 等，
+    #       几个代码即可，别和全量回填抢限流源，等 backfill_v2 跑完再单独抓）。
+    # 做法：给本函数加可选入参 market_df（指数日线，按 date 对齐 merge 进来），
+    #       派生环境因子：个股相对大盘强弱(个股收益-大盘收益)、大盘MA偏离/动量/RSI。
+    #       同换手率一样加入 _OPTIONAL_FEATURES：缺失时中性填 0，绝不因缺指数而崩。
+    #       调用点需同步传入：predict_stock / model_training_service._collect_samples /
+    #       prediction_backtest_service（指数只加载一次并缓存，避免逐票重复抓）。
+    #
+    # TODO(准确率优化 · 第二阶段：模型升级 LightGBM) —— 视第一阶段回测结果再定
+    # 触发条件：等①(改标签)+②(环境特征)重训并回测出胜率/资金曲线后，
+    #           若线性模型(logistic_regression_gd)天花板明显，再引入 LightGBM。
+    # 注意：LightGBM 需新增第三方依赖(lightgbm)，加依赖前先确认收益值得，
+    #       并在 train_model()/预测加载处做算法分支(algorithm 字段已入库可区分)。
+    # ============================================================
     data = df.copy()
     data = data.sort_values("date").reset_index(drop=True)
     close = data["close"].astype(float)
@@ -164,6 +218,12 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     high = data["high"].astype(float) if "high" in data else close
     low = data["low"].astype(float) if "low" in data else close
     volume = data["volume"].astype(float) if "volume" in data else pd.Series(np.nan, index=data.index)
+    # 换手率（数据源直供，%）；缺列则整列 NaN，后续以 0 中性填充
+    turnover = (
+        pd.to_numeric(data["turnover_rate"], errors="coerce")
+        if "turnover_rate" in data.columns
+        else pd.Series(np.nan, index=data.index)
+    )
 
     ret = close.pct_change()
     prev_close = close.shift(1)
@@ -223,8 +283,17 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     feats["volume_ratio"] = (volume / vol_ma5) - 1.0
     feats["volume_trend"] = (vol_ma5 / vol_ma20) - 1.0
     feats["pv_corr_10"] = ret.rolling(10, min_periods=10).corr(volume.pct_change())
+    # ── 换手率 ──
+    turn_ma20 = turnover.rolling(20, min_periods=5).mean()
+    feats["turnover_norm"] = turnover / 100.0                              # 绝对换手率(小数)
+    feats["turnover_rel"] = (turnover / turn_ma20.replace(0, np.nan)) - 1.0  # 相对20日均值的活跃度
 
     feats = feats.replace([np.inf, -np.inf], np.nan)
+    # 可选特征（换手率）在数据源缺失时整列为 NaN：填 0 中性值，
+    # 避免把无换手率的股票在下面 dropna 时整只清空。
+    for _col in _OPTIONAL_FEATURES:
+        if _col in feats.columns:
+            feats[_col] = feats[_col].fillna(0.0)
     feats = feats.dropna(subset=FEATURE_ORDER + ["close"]).reset_index(drop=True)
     return feats
 
@@ -241,7 +310,12 @@ def train_model(
     l2: float = 1e-3,
     train_ratio: float = 0.8,
 ) -> tuple[TinyLogisticModel, Dict[str, Any]]:
-    """按时间顺序切分并训练逻辑回归，返回 (模型, 评估指标)。"""
+    """按时间顺序切分并训练逻辑回归，返回 (模型, 评估指标)。
+
+    TODO(第二阶段·模型升级 LightGBM，下次续做): 若第一阶段(改标签+环境特征)
+    回测后线性模型天花板明显，可在此新增 LightGBM 训练分支（需加 lightgbm 依赖，
+    加依赖前先确认收益）。详见 build_features 顶部 TODO 的完整路线说明。
+    """
     n = len(X)
     n_train = max(int(n * train_ratio), 1)
     X_train, X_valid = X[:n_train], X[n_train:]
@@ -350,6 +424,7 @@ def _rows_to_df(rows: list) -> pd.DataFrame:
             "low": r.low,
             "close": r.close,
             "volume": r.volume,
+            "turnover_rate": getattr(r, "turnover_rate", None),
         }
         for r in rows
     ]
@@ -518,13 +593,14 @@ def predict_stock(
             f"有效样本不足（仅 {len(feats)} 条），无法构造特征；请换个数据更全的标的或加大回溯天数"
         )
 
-    # 标签：次日是否上涨（收盘价较当日上涨记 1）
-    future_return = feats["close"].shift(-1) / feats["close"] - 1.0
-    y_all = (future_return > 0).astype(int)
+    # 标签：未来 horizon_days 日是否上涨（与下方价格路径推演的周期一致）
+    # 相比"次日涨跌"，N 日趋势信噪比更高。末 horizon 行无未来数据、不参与训练。
+    label_horizon = horizon_days
+    y_series = make_labels(feats["close"], horizon=label_horizon)
 
-    # 最后一行没有"次日"标签，只能用于最终预测，不参与训练
-    train_feats = feats.iloc[:-1]
-    y = y_all.iloc[:-1].to_numpy()
+    # 仅保留有标签的行用于训练（等价于剔除末尾 horizon 行）
+    train_feats = feats.iloc[:-label_horizon] if label_horizon < len(feats) else feats.iloc[0:0]
+    y = y_series.iloc[:-label_horizon].to_numpy() if label_horizon < len(feats) else np.zeros(0)
     X = train_feats[FEATURE_ORDER].to_numpy(dtype=float)
 
     # 优先使用离线训练好的激活模型；否则退回实时训练

@@ -126,6 +126,8 @@ def _run_training(args: argparse.Namespace) -> dict:
         model_name=args.name,
         epochs=args.epochs,
         lr=args.lr,
+        horizon=args.horizon,
+        threshold=args.threshold,
         set_active=not args.no_active,
         refresh=not args.no_refresh,
         notes=args.notes,
@@ -139,7 +141,7 @@ def _list_models(args: argparse.Namespace) -> None:
 
     # 默认列出全部；显式传入非默认 --name 时按名称过滤
     name_filter = args.name if args.name != "trend_lr" else None
-    models = PredictionModelRepository().list_models(name=name_filter, limit=args.limit)
+    models = PredictionModelRepository().list_models(name=name_filter, limit=args.list_limit)
     if not models:
         print("暂无已训练的模型。先运行一次训练，例如：python train_model.py --from-watchlist")
         return
@@ -181,13 +183,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--name", type=str, default="trend_lr", help="模型名（默认 trend_lr）")
     parser.add_argument("--epochs", type=int, default=400, help="训练轮数（默认 400）")
     parser.add_argument("--lr", type=float, default=0.3, help="学习率（默认 0.3）")
+    parser.add_argument("--horizon", type=int, default=5, help="标签前瞻天数=预测未来N日方向（默认 5）")
+    parser.add_argument("--threshold", type=float, default=0.0, help="记为看涨所需最小未来收益（默认 0=纯方向，如 0.02=需涨超2%%）")
     parser.add_argument("--no-active", action="store_true", help="训练后不设为激活版本")
     parser.add_argument("--no-refresh", action="store_true", help="不联网，仅用本地缓存数据训练")
     parser.add_argument("--notes", type=str, default=None, help="模型备注")
     parser.add_argument("--schedule", type=str, default=None, metavar="HH:MM", help="每日定时训练时间，后台常驻")
     parser.add_argument("--no-run-immediately", action="store_true", help="定时模式下启动时不先训练一次")
     parser.add_argument("--list", action="store_true", help="列出已训练的模型版本")
-    parser.add_argument("--limit", type=int, default=30, help="--list 显示的条数（默认 30）")
+    parser.add_argument("--list-limit", type=int, default=30, help="--list 显示的条数（默认 30）")
     parser.add_argument("--activate", type=int, default=None, metavar="ID", help="将指定 id 的模型设为激活版本")
     parser.add_argument("--debug", action="store_true", help="调试日志")
     return parser.parse_args()
