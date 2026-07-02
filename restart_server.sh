@@ -13,6 +13,7 @@
 #   ./restart_server.sh --no-build      # 跳过前端打包，仅重启后端
 #   ./restart_server.sh --reinstall     # 强制重装前端依赖后再打包
 #   ./restart_server.sh --stop          # 只停止，不启动
+#   ./restart_server.sh --status        # 只查看运行状态，不做任何改动
 #   ./restart_server.sh --foreground    # 前台运行（Ctrl+C 退出）
 #
 # 依赖安装策略：默认按 package-lock.json 内容哈希判断，仅在依赖缺失或清单
@@ -28,6 +29,7 @@ PORT="${API_PORT:-8020}"
 HOST="0.0.0.0"
 DO_BUILD=1
 STOP_ONLY=0
+STATUS_ONLY=0
 FOREGROUND=0
 FORCE_REINSTALL=0
 
@@ -38,6 +40,7 @@ while [[ $# -gt 0 ]]; do
     --no-build) DO_BUILD=0; shift ;;
     --reinstall) FORCE_REINSTALL=1; shift ;;
     --stop) STOP_ONLY=1; shift ;;
+    --status) STATUS_ONLY=1; shift ;;
     --foreground|--fg) FOREGROUND=1; shift ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -123,6 +126,37 @@ stop_service() {
   else
     log "未发现正在运行的服务（端口 $PORT 空闲）。"
   fi
+}
+
+# ── 查看服务状态（只读，不做任何改动）──────────────────────
+status_service() {
+  local pid_file_pid="" port_pid
+  [[ -f "$PID_FILE" ]] && pid_file_pid="$(cat "$PID_FILE" 2>/dev/null || true)"
+  port_pid="$(find_pid_by_port || true)"
+
+  if [[ -n "$port_pid" ]]; then
+    log "✅ 运行中：端口 $PORT 由 PID=$port_pid 监听（http://localhost:$PORT）"
+    if [[ -n "$pid_file_pid" && "$pid_file_pid" != "$port_pid" ]]; then
+      log "   注意：PID 文件记录=$pid_file_pid，与端口占用进程不一致"
+    fi
+    if command -v curl >/dev/null 2>&1; then
+      if curl -fsS "http://127.0.0.1:$PORT/api/v1/health" >/dev/null 2>&1 \
+         || curl -fsS "http://127.0.0.1:$PORT/" >/dev/null 2>&1; then
+        log "   健康检查：通过"
+      else
+        log "   健康检查：端口在监听但接口未响应（可能仍在启动）"
+      fi
+    fi
+    return 0
+  fi
+
+  if [[ -n "$pid_file_pid" ]] && kill -0 "$pid_file_pid" >/dev/null 2>&1; then
+    log "⚠️ 进程存活(PID=$pid_file_pid)，但未监听端口 $PORT。日志：$LOG_FILE"
+    return 0
+  fi
+
+  log "⛔ 未运行（端口 $PORT 空闲）。"
+  return 1
 }
 
 # ── 确保前端依赖已安装（依赖清单变化时自动重装）──────────────
@@ -212,6 +246,10 @@ start_service() {
 
 # ── 主流程 ────────────────────────────────────────────────
 main() {
+  if [[ "$STATUS_ONLY" -eq 1 ]]; then
+    status_service || true
+    exit 0
+  fi
   stop_service
   if [[ "$STOP_ONLY" -eq 1 ]]; then
     log "已按 --stop 停止服务，退出。"
