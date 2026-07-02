@@ -301,6 +301,52 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 # ─────────────────────────────────────────────
 # 第 2~3 步：切分 + 训练（手写梯度下降）
 # ─────────────────────────────────────────────
+def _fit_logistic(
+    X_raw: np.ndarray,
+    y: np.ndarray,
+    *,
+    epochs: int,
+    lr: float,
+    l2: float,
+    class_weight: bool,
+) -> TinyLogisticModel:
+    """在给定样本上拟合逻辑回归（手写批量梯度下降），返回已训练模型。
+
+    class_weight=True 时按类别频率反比加权，纠正正/负样本不平衡带来的方向偏移
+    （牛市正样本多、熊市负样本多，无权重会系统性偏向多数类）。
+    标准化统计量取自传入样本本身（调用方负责保证无信息泄露）。
+    """
+    mean = X_raw.mean(axis=0)
+    std = X_raw.std(axis=0)
+    std[std == 0] = 1.0
+
+    model = TinyLogisticModel(n_features=X_raw.shape[1], mean=mean, std=std)
+    Xs = (X_raw - mean) / std
+    m = len(Xs)
+    if m == 0:
+        return model
+
+    # 样本权重：类别频率反比（均衡）；关闭则等权
+    if class_weight:
+        pos_rate = float(np.clip(y.mean(), 1e-6, 1 - 1e-6))
+        w_pos = 0.5 / pos_rate
+        w_neg = 0.5 / (1.0 - pos_rate)
+        sw = np.where(y >= 0.5, w_pos, w_neg)
+    else:
+        sw = np.ones(m)
+    sw_sum = float(sw.sum()) or 1.0
+
+    for _ in range(epochs):
+        z = Xs @ model.weights + model.bias
+        p = 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
+        err = (p - y) * sw
+        grad_w = (Xs.T @ err) / sw_sum + l2 * model.weights
+        grad_b = float(err.sum() / sw_sum)
+        model.weights -= lr * grad_w
+        model.bias -= lr * grad_b
+    return model
+
+
 def train_model(
     X: np.ndarray,
     y: np.ndarray,
@@ -309,8 +355,21 @@ def train_model(
     lr: float = 0.3,
     l2: float = 1e-3,
     train_ratio: float = 0.8,
+    embargo: int = 0,
+    class_weight: bool = True,
+    refit_full: bool = True,
 ) -> tuple[TinyLogisticModel, Dict[str, Any]]:
-    """按时间顺序切分并训练逻辑回归，返回 (模型, 评估指标)。
+    """按时间顺序切分并训练逻辑回归，返回 (上线模型, 评估指标)。
+
+    相比朴素时序切分，这里修正了三处影响真实准确率/指标可信度的问题：
+
+    1. **purge/embargo 切分**：标签为「未来 N 日方向」按天滑动，训练集末尾 N 行的
+       未来收益会跨进验证段造成信息泄露、虚高 valid_accuracy。故在 train 与
+       valid 之间挖掉 ``embargo``(=标签前瞻天数) 行，得到诚实的样本外指标。
+    2. **全量 refit 上线**：用切分评估拿到诚实指标后，最终模型改用**全部有标签
+       样本**重新拟合（``refit_full``），确保上线模型吃到最新一段行情，而非只用
+       前 train_ratio 的老数据去预测今天。
+    3. **类别权重**：见 :func:`_fit_logistic`，纠正正/负样本不平衡的方向偏移。
 
     TODO(第二阶段·模型升级 LightGBM，下次续做): 若第一阶段(改标签+环境特征)
     回测后线性模型天花板明显，可在此新增 LightGBM 训练分支（需加 lightgbm 依赖，
@@ -318,46 +377,47 @@ def train_model(
     """
     n = len(X)
     n_train = max(int(n * train_ratio), 1)
-    X_train, X_valid = X[:n_train], X[n_train:]
-    y_train, y_valid = y[:n_train], y[n_train:]
+    embargo = int(max(0, embargo))
+    valid_start = min(n_train + embargo, n)  # 挖掉 embargo 行，隔断标签重叠
 
-    # 用训练集统计量做标准化（避免信息泄露）
-    mean = X_train.mean(axis=0)
-    std = X_train.std(axis=0)
-    std[std == 0] = 1.0
+    X_train, y_train = X[:n_train], y[:n_train]
+    X_valid, y_valid = X[valid_start:], y[valid_start:]
 
-    model = TinyLogisticModel(n_features=X.shape[1], mean=mean, std=std)
-    Xs = (X_train - mean) / std
-    m = len(Xs)
+    # 评估用模型：仅在训练段拟合，验证段完全样本外（诚实估计泛化能力）
+    eval_model = _fit_logistic(
+        X_train, y_train, epochs=epochs, lr=lr, l2=l2, class_weight=class_weight,
+    )
 
-    for _ in range(epochs):
-        z = Xs @ model.weights + model.bias
-        p = 1.0 / (1.0 + np.exp(-np.clip(z, -30, 30)))
-        err = p - y_train
-        grad_w = (Xs.T @ err) / m + l2 * model.weights
-        grad_b = float(err.mean())
-        model.weights -= lr * grad_w
-        model.bias -= lr * grad_b
-
-    def _accuracy(Xa: np.ndarray, ya: np.ndarray) -> Optional[float]:
+    def _accuracy(model: TinyLogisticModel, Xa: np.ndarray, ya: np.ndarray) -> Optional[float]:
         if len(Xa) == 0:
             return None
         preds = (model.predict_proba(Xa) >= 0.5).astype(int)
         return float((preds == ya).mean())
 
-    # 基线：全部预测为「多数类」的准确率
-    baseline = float(max(y_train.mean(), 1 - y_train.mean())) if len(y_train) else None
+    # 基线：全部预测为「多数类」的准确率（valid 段口径，用于判断模型是否真有增量）
+    baseline = float(max(y_valid.mean(), 1 - y_valid.mean())) if len(y_valid) else (
+        float(max(y_train.mean(), 1 - y_train.mean())) if len(y_train) else None
+    )
 
     metrics = {
-        "train_accuracy": _accuracy(X_train, y_train),
-        "valid_accuracy": _accuracy(X_valid, y_valid),
+        "train_accuracy": _accuracy(eval_model, X_train, y_train),
+        "valid_accuracy": _accuracy(eval_model, X_valid, y_valid),
         "train_samples": int(len(X_train)),
         "valid_samples": int(len(X_valid)),
         "baseline_accuracy": baseline,
         "epochs": epochs,
         "learning_rate": lr,
     }
-    return model, metrics
+
+    # 上线模型：用全部有标签样本重训，吃到最新行情；否则退回评估模型
+    if refit_full and n > 0:
+        final_model = _fit_logistic(
+            X, y, epochs=epochs, lr=lr, l2=l2, class_weight=class_weight,
+        )
+    else:
+        final_model = eval_model
+
+    return final_model, metrics
 
 
 # ─────────────────────────────────────────────
@@ -621,7 +681,7 @@ def predict_stock(
             raise PredictionError(
                 f"有效样本不足（仅 {len(feats)} 条），无法训练模型；请换个数据更全的标的或加大回溯天数"
             )
-        model, metrics = train_model(X, y)
+        model, metrics = train_model(X, y, embargo=label_horizon)
         model_source = "on_the_fly"
         model_meta = {"source": "on_the_fly", "name": None, "version": None}
 

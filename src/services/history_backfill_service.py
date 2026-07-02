@@ -13,9 +13,12 @@
 3. **落库**：StockRepository.save_dataframe()（按 code+date 幂等 upsert）。
 4. **断点续传**：DB 为真相源（get_coverage 查已存最早/最晚日期）+ JSON 进度台账
    记录每只票的状态/行数/错误，随时中断重跑自动跳过已完成的。
-5. **两种模式**：
+5. **三种模式**：
    - full：对每只票按 [start, today] 整段拉取（首次建库 / 修复历史缺口）。
    - incremental：只补每只票「已存最新日期之后」的缺口（日常维护，请求少）。
+   - smart：按 DB 已有覆盖自动算前后缺口——start<已存最早则往前补历史、
+     end>已存最新则往后补增量。适合“先拉近两年、以后再把 start 往前推补更早历史”，
+     零重复请求、幂等、可中断续传。
 6. **容错/限流**：单只失败不影响整体（记录 error）；每次请求间 sleep 防封禁。
 
 ⚠️ 数据仅供技术研究，不构成任何投资建议。
@@ -28,9 +31,12 @@ import logging
 import os
 import time
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# 单个待拉取区间段：(起始日, 结束日)，闭区间
+_Seg = Tuple[date, date]
 
 DEFAULT_START_DATE = "2010-01-01"
 DEFAULT_PROGRESS_PATH = os.path.join("data", "backfill_progress.json")
@@ -190,8 +196,8 @@ class HistoryBackfillService:
             limit: 仅处理前 N 只（试跑）
             progress_path: 进度台账路径
         """
-        if mode not in ("full", "incremental"):
-            raise BackfillError(f"未知模式：{mode}（应为 full 或 incremental）")
+        if mode not in ("full", "incremental", "smart"):
+            raise BackfillError(f"未知模式：{mode}（应为 full / incremental / smart）")
 
         end_date = end_date or date.today().isoformat()
         end_d = _parse_date(end_date)
@@ -290,42 +296,93 @@ class HistoryBackfillService:
     ) -> Dict[str, Any]:
         """处理单只股票，返回 {action, ...}。action ∈ skipped/fetched/empty/failed。"""
         coverage = self.repo.get_coverage(code)
+        first = coverage.get("first")
         last = coverage.get("last")
 
-        # 判断是否已最新（DB 为准）
-        if not force and last is not None:
-            if (end_d - last).days <= fresh_days:
-                return {"action": "skipped", "last": last, "rows": coverage.get("rows", 0)}
-
-        # 决定拉取起始日
-        if force or last is None or mode == "full":
-            fetch_start = start_d
-        else:  # incremental 且已有数据 → 从最新日期次日开始
-            fetch_start = last + timedelta(days=1)
-
-        if fetch_start > end_d:
+        # 计算需要实际请求的区间段（可能 0/1/2 段）
+        segments = self._plan_segments(
+            start_d=start_d, end_d=end_d, first=first, last=last,
+            mode=mode, fresh_days=fresh_days, force=force,
+        )
+        if not segments:
             return {"action": "skipped", "last": last, "rows": coverage.get("rows", 0)}
 
-        # 拉取（带重试）
-        df, source, err = self._fetch_with_retry(
-            code, fetch_start.isoformat(), end_d.isoformat(), retry=retry
-        )
-        # 只要实际发起了网络请求就限流
-        if sleep > 0:
-            time.sleep(sleep)
+        # 逐段拉取（每段独立重试 + 限流），任一段失败/空按整体处理
+        total_added = 0
+        used_source = None
+        got_any = False
+        for seg_start, seg_end in segments:
+            df, source, err = self._fetch_with_retry(
+                code, seg_start.isoformat(), seg_end.isoformat(), retry=retry
+            )
+            # 只要实际发起了网络请求就限流
+            if sleep > 0:
+                time.sleep(sleep)
 
-        if err is not None:
-            return {"action": "failed", "error": err}
-        if df is None or df.empty:
+            if err is not None:
+                # 已成功拉过至少一段则不判失败，保留已入库数据
+                if got_any:
+                    logger.warning("%s 分段 %s~%s 拉取失败：%s（已保留其余段）",
+                                   code, seg_start, seg_end, err)
+                    continue
+                return {"action": "failed", "error": err}
+            if df is None or df.empty:
+                continue
+
+            added = self.repo.save_dataframe(df, code, data_source=source or "backfill")
+            total_added += int(added)
+            used_source = source or used_source
+            got_any = True
+
+        if not got_any:
             return {"action": "empty"}
 
-        added = self.repo.save_dataframe(df, code, data_source=source or "backfill")
         cov2 = self.repo.get_coverage(code)
         return {
-            "action": "fetched", "added": int(added),
+            "action": "fetched", "added": total_added,
             "first": cov2.get("first"), "last": cov2.get("last"),
-            "rows": cov2.get("rows"), "source": source,
+            "rows": cov2.get("rows"), "source": used_source,
         }
+
+    @staticmethod
+    def _plan_segments(
+        *, start_d: date, end_d: date, first: Optional[date], last: Optional[date],
+        mode: str, fresh_days: int, force: bool,
+    ) -> List["_Seg"]:
+        """根据模式与 DB 已有覆盖，规划需要请求的区间段。
+
+        - full：整段 [start, end]（force 或数据太旧时；否则若已最新则空）。
+        - incremental：只补 [last+1, end] 的往后缺口。
+        - smart：按 DB 覆盖计算前后缺口——start<first 补前段、end>last 补后段，
+                 从而支持“先拉近段、后补更早历史”而不重复请求。
+        """
+        # 强制：无脑整段重拉
+        if force:
+            return [(start_d, end_d)] if start_d <= end_d else []
+
+        # DB 无数据 → 直接整段
+        if first is None or last is None:
+            return [(start_d, end_d)] if start_d <= end_d else []
+
+        if mode == "smart":
+            segs: List["_Seg"] = []
+            if start_d < first:
+                segs.append((start_d, first - timedelta(days=1)))  # 往前补历史
+            if end_d > last:
+                segs.append((last + timedelta(days=1), end_d))     # 往后补增量
+            return segs
+
+        if mode == "incremental":
+            # 已最新则不动
+            if (end_d - last).days <= fresh_days:
+                return []
+            seg_start = last + timedelta(days=1)
+            return [(seg_start, end_d)] if seg_start <= end_d else []
+
+        # full：数据够新则跳过，否则整段
+        if (end_d - last).days <= fresh_days and start_d >= first:
+            return []
+        return [(start_d, end_d)] if start_d <= end_d else []
 
     def _fetch_with_retry(self, code: str, start: str, end: str, *, retry: int):
         """返回 (df, source, error_str)。error_str 为 None 表示成功。"""

@@ -24,6 +24,11 @@
   # 增量模式：只补每只票缺的最新一段（日常维护，请求少）
   python backfill_history.py --all --mode incremental
 
+  # 渐进式建库（推荐）：先拉近两年训练，以后把 start 往前推即可补更早历史，
+  # smart 模式按已有覆盖自动只补缺口，前后都补、零重复请求、可中断续传。
+  python backfill_history.py --all --mode smart --start 2024-07-01   # 第一次：近两年
+  python backfill_history.py --all --mode smart --start 2020-07-01   # 以后：自动补 2020~2024 的缺口 + 最新增量
+
   # 只重试之前失败的
   python backfill_history.py --all --retry-failed
 
@@ -164,8 +169,8 @@ def parse_args() -> argparse.Namespace:
     # 区间与模式
     parser.add_argument("--start", type=str, default="2010-01-01", help="回填起始日（默认 2010-01-01）")
     parser.add_argument("--end", type=str, default=None, help="回填结束日（默认今天）")
-    parser.add_argument("--mode", type=str, choices=["full", "incremental"], default="full",
-                        help="full=整段拉；incremental=只补最新缺口（默认 full）")
+    parser.add_argument("--mode", type=str, choices=["full", "incremental", "smart"], default="full",
+                        help="full=整段拉；incremental=只补最新缺口；smart=按已有覆盖自动补前后缺口（默认 full）")
     # 续传/容错/限流
     parser.add_argument("--fresh-days", type=int, default=4, help="DB 最新日期距今≤该天数则视为已最新并跳过（默认 4）")
     parser.add_argument("--force", action="store_true", help="忽略已最新判断，强制按 start 重拉")

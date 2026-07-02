@@ -177,7 +177,7 @@ class ModelTrainingService:
             len(X), len(used_symbols), 100.0 * float(y.mean()) if len(y) else 0.0,
         )
 
-        model, metrics = train_model(X, y, epochs=epochs, lr=lr, l2=l2)
+        model, metrics = train_model(X, y, epochs=epochs, lr=lr, l2=l2, embargo=horizon)
 
         version = started.strftime("%Y%m%d_%H%M%S")
         start_date = min(all_dates) if all_dates else None
