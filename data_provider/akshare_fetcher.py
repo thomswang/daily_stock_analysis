@@ -890,6 +890,9 @@ class AkshareFetcher(BaseFetcher):
             '成交量': 'volume',
             '成交额': 'amount',
             '涨跌幅': 'pct_chg',
+            '涨跌额': 'change_amount',   # 原始行情：涨跌额
+            '振幅': 'amplitude',         # 原始行情：振幅(%)
+            '换手率': 'turnover_rate',   # 原始行情：换手率(%)
         }
         
         # 重命名列
@@ -898,8 +901,9 @@ class AkshareFetcher(BaseFetcher):
         # 添加股票代码列
         df['code'] = stock_code
         
-        # 只保留需要的列
-        keep_cols = ['code'] + STANDARD_COLUMNS
+        # 只保留需要的列（标准列 + 原始行情扩展列：涨跌额/振幅/换手率）
+        extra_raw_cols = ['change_amount', 'amplitude', 'turnover_rate']
+        keep_cols = ['code'] + STANDARD_COLUMNS + extra_raw_cols
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
         

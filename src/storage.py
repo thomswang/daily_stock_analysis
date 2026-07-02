@@ -123,7 +123,12 @@ class StockDaily(Base):
     volume = Column(Float)  # 成交量（股）
     amount = Column(Float)  # 成交额（元）
     pct_chg = Column(Float)  # 涨跌幅（%）
-    
+
+    # 原始行情字段（数据源直接给出，属"原始层"真相，不再丢弃）
+    change_amount = Column(Float)   # 涨跌额（元）
+    amplitude = Column(Float)       # 振幅（%）
+    turnover_rate = Column(Float)   # 换手率（%）
+
     # 技术指标
     ma5 = Column(Float)
     ma10 = Column(Float)
@@ -920,6 +925,13 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
+# stock_daily 原始行情扩展列：给旧库补齐（SQLite ALTER TABLE ADD COLUMN）
+_STOCK_DAILY_EXTRA_COLUMN_SQL: Dict[str, str] = {
+    "change_amount": "FLOAT",
+    "amplitude": "FLOAT",
+    "turnover_rate": "FLOAT",
+}
+
 _LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
     "provider_usage_json": "TEXT",
     "provider": "VARCHAR(64)",
@@ -1291,6 +1303,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # 创建所有表
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
+            self._ensure_stock_daily_columns()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1442,6 +1455,54 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     index_columns.append(column_name)
                 unique_indexes.append(index_columns)
             return unique_indexes
+
+    def _ensure_stock_daily_columns(self) -> None:
+        """给已存在的 stock_daily 表补齐原始行情扩展列（涨跌额/振幅/换手率）。
+
+        新库由 metadata.create_all 直接建全；旧库缺列时用 ALTER TABLE 补齐，
+        补上的列对历史行是 NULL，需重新拉取数据才会回填。
+        """
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(StockDaily.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning(
+                "[stock_daily] 检查扩展列失败，跳过 SQLite 补列: %s", exc
+            )
+            return
+
+        max_retries = self._sqlite_write_retry_max
+        for column, column_type in _STOCK_DAILY_EXTRA_COLUMN_SQL.items():
+            if column in existing:
+                continue
+            for attempt in range(max_retries + 1):
+                try:
+                    with self._engine.begin() as connection:
+                        connection.exec_driver_sql(
+                            f"ALTER TABLE {StockDaily.__tablename__} "
+                            f"ADD COLUMN {column} {column_type}"
+                        )
+                    existing.add(column)
+                    logger.info("[stock_daily] 已补列: %s %s", column, column_type)
+                    break
+                except OperationalError as exc:
+                    if self._is_sqlite_duplicate_column_error(exc, column):
+                        existing.add(column)
+                        break
+                    if self._is_sqlite_locked_error(exc) and attempt < max_retries:
+                        delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
+                        logger.warning(
+                            "[stock_daily] 补列被锁，重试: %s (%s/%s, %.2fs)",
+                            column, attempt + 1, max_retries, delay,
+                        )
+                        if delay > 0:
+                            time.sleep(delay)
+                        continue
+                    raise
 
     def _ensure_llm_usage_telemetry_columns(self) -> None:
         """Add nullable P0a usage telemetry columns to existing SQLite DBs."""
@@ -2512,6 +2573,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 'volume': self._normalize_sql_value(row.get('volume')),
                 'amount': self._normalize_sql_value(row.get('amount')),
                 'pct_chg': self._normalize_sql_value(row.get('pct_chg')),
+                'change_amount': self._normalize_sql_value(row.get('change_amount')),
+                'amplitude': self._normalize_sql_value(row.get('amplitude')),
+                'turnover_rate': self._normalize_sql_value(row.get('turnover_rate')),
                 'ma5': self._normalize_sql_value(row.get('ma5')),
                 'ma10': self._normalize_sql_value(row.get('ma10')),
                 'ma20': self._normalize_sql_value(row.get('ma20')),
@@ -2530,8 +2594,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         def _write(session: Session) -> int:
             if self._is_sqlite_engine:
                 # SQLite has a per-statement bind-parameter limit (commonly 999).
-                # Each record has ~15 columns, so chunk upserts to stay within bounds.
-                _SQLITE_CHUNK = 50
+                # Each record has ~19 columns, so chunk upserts to stay within bounds.
+                _SQLITE_CHUNK = 40
                 # `_run_write_transaction()` opens SQLite writes with
                 # `BEGIN IMMEDIATE`, so existence checks and upsert execute
                 # within one stable write window.
@@ -2569,6 +2633,17 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                                 'volume': excluded.volume,
                                 'amount': excluded.amount,
                                 'pct_chg': excluded.pct_chg,
+                                # 原始行情列：仅当新值非空才覆盖，避免兜底源(无这些列)
+                                # 把已填好的历史值抹成 NULL（防数据回退）。
+                                'change_amount': func.coalesce(
+                                    excluded.change_amount, StockDaily.change_amount
+                                ),
+                                'amplitude': func.coalesce(
+                                    excluded.amplitude, StockDaily.amplitude
+                                ),
+                                'turnover_rate': func.coalesce(
+                                    excluded.turnover_rate, StockDaily.turnover_rate
+                                ),
                                 'ma5': excluded.ma5,
                                 'ma10': excluded.ma10,
                                 'ma20': excluded.ma20,
@@ -2605,6 +2680,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     existing.volume = record['volume']
                     existing.amount = record['amount']
                     existing.pct_chg = record['pct_chg']
+                    # 原始行情列：仅当新值非空才覆盖，避免兜底源把已填值抹成 NULL
+                    if record['change_amount'] is not None:
+                        existing.change_amount = record['change_amount']
+                    if record['amplitude'] is not None:
+                        existing.amplitude = record['amplitude']
+                    if record['turnover_rate'] is not None:
+                        existing.turnover_rate = record['turnover_rate']
                     existing.ma5 = record['ma5']
                     existing.ma10 = record['ma10']
                     existing.ma20 = record['ma20']
