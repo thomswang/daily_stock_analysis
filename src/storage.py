@@ -171,6 +171,45 @@ class StockDaily(Base):
         }
 
 
+class StockIndustry(Base):
+    """
+    个股所属行业快照（point-in-time 归属）
+
+    行业归属是缓慢变化的维度：股票会被重新分类、并购改行业、新股上市。
+    多数数据源只给「当前」归属，给不了历史某天的归属。因此这里按 as_of_date
+    定期快照存档，逐步积累出「历史真相」，供建模时按日期对齐、避免未来函数。
+
+    一行 = 某只票在某个快照日的行业归属。
+    """
+    __tablename__ = 'stock_industry'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 股票代码（与 stock_daily.code 同口径，如 600519 / 000001）
+    code = Column(String(10), nullable=False, index=True)
+
+    # 所属行业名称（数据源直供，如 银行 / 白酒）
+    industry = Column(String(64), nullable=False)
+    # 行业板块代码（可空，数据源若提供则存，如东财 BK0475）
+    industry_code = Column(String(20))
+
+    # 快照日期（point-in-time 的关键）
+    as_of_date = Column(Date, nullable=False, index=True)
+    # 数据来源（akshare_em / tushare / efinance ...）
+    source = Column(String(32))
+
+    created_at = Column(DateTime, default=datetime.now)
+
+    # 同一票同一快照日只保留一条
+    __table_args__ = (
+        UniqueConstraint('code', 'as_of_date', name='uix_industry_code_date'),
+        Index('ix_industry_code_date', 'code', 'as_of_date'),
+    )
+
+    def __repr__(self):
+        return f"<StockIndustry(code={self.code}, industry={self.industry}, as_of={self.as_of_date})>"
+
+
 class NewsIntel(Base):
     """
     新闻情报数据模型

@@ -596,6 +596,26 @@ class AkshareFetcher(BaseFetcher):
                     df['涨跌幅'] = df['收盘'].pct_change() * 100
                     df['涨跌幅'] = df['涨跌幅'].fillna(0)
 
+                # 换手率：新浪逐日提供 outstanding_share(流通股本) 与 turnover(小数比例)。
+                # 经多源交叉验证，换手率(%) = 成交量 / 流通股本 * 100（= turnover*100），
+                # 计算法口径无歧义且能反映历年股本变动，优先采用；缺流通股本则退回 turnover*100。
+                if '成交量' in df.columns and 'outstanding_share' in df.columns:
+                    _os = pd.to_numeric(df['outstanding_share'], errors='coerce')
+                    _vol = pd.to_numeric(df['成交量'], errors='coerce')
+                    df['换手率'] = (_vol / _os * 100).where(_os > 0)
+                elif 'turnover' in df.columns:
+                    df['换手率'] = pd.to_numeric(df['turnover'], errors='coerce') * 100
+
+                # 新浪不直接给涨跌额/振幅，用 OHLC 回看补算（无未来函数）
+                if '收盘' in df.columns:
+                    _close = pd.to_numeric(df['收盘'], errors='coerce')
+                    _prev = _close.shift(1)
+                    df['涨跌额'] = _close - _prev
+                    if '最高' in df.columns and '最低' in df.columns:
+                        _high = pd.to_numeric(df['最高'], errors='coerce')
+                        _low = pd.to_numeric(df['最低'], errors='coerce')
+                        df['振幅'] = (_high - _low) / _prev * 100
+
                 return df
             return pd.DataFrame()
 

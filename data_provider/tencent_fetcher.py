@@ -93,7 +93,16 @@ class TencentFetcher(BaseFetcher):
                 normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
         if "pct_chg" not in normalized.columns:
             normalized["pct_chg"] = normalized["close"].pct_change().fillna(0.0) * 100
-        normalized = normalized[["date", "open", "high", "low", "close", "volume", "amount", "pct_chg"]]
+        # 腾讯 K 线不含涨跌额/振幅/换手率；前两者用 OHLC 回看补算（无未来函数），
+        # 换手率无法从该接口获得，留空由换手率回填脚本补齐。
+        prev_close = normalized["close"].shift(1)
+        normalized["change_amount"] = normalized["close"] - prev_close
+        normalized["amplitude"] = (normalized["high"] - normalized["low"]) / prev_close * 100
+        keep = [
+            "date", "open", "high", "low", "close", "volume", "amount", "pct_chg",
+            "change_amount", "amplitude",
+        ]
+        normalized = normalized[[c for c in keep if c in normalized.columns]]
         return normalized
 
 
