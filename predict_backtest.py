@@ -100,6 +100,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model-name", type=str, default="trend_lr", help="全局模型名(默认 trend_lr)")
     p.add_argument("--label-mode", type=str, default="absolute", choices=["absolute", "relative"],
                    help="检验口径：absolute=绝对涨跌(默认)；relative=是否跑赢大盘(超额收益,市场中性)")
+    p.add_argument("--algorithm", type=str, default="logistic", choices=["logistic", "lightgbm"],
+                   help="per_stock 模式的模型：logistic(默认)/lightgbm；global 模式以激活模型为准")
     p.add_argument("--debug", action="store_true", help="调试日志")
     return p.parse_args()
 
@@ -131,6 +133,7 @@ def main() -> int:
             use_global_model=args.global_model,
             model_name=args.model_name,
             label_mode=args.label_mode,
+            algorithm=args.algorithm,
         )
     except PredictionError as exc:
         raise SystemExit(f"回测失败：{exc}")

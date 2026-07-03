@@ -33,6 +33,7 @@ pandas>=2.0.0               # Data analysis
 pypinyin>=0.50.0            # Name-to-code resolver (pinyin matching)
 openpyxl>=3.1.0             # Excel (.xlsx) parsing for import
 numpy>=1.24.0               # Numeric computing
+lightgbm>=4.0.0             # Gradient boosting model for trend prediction (nonlinear upgrade over logistic)
 json-repair>=0.55.1         # JSON repair
 
 # AI analysis

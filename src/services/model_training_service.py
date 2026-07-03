@@ -165,6 +165,7 @@ class ModelTrainingService:
         refresh: bool = True,
         notes: Optional[str] = None,
         label_mode: str = "absolute",
+        algorithm: str = "logistic",
     ) -> Dict[str, Any]:
         """执行训练并持久化，返回训练摘要。
 
@@ -187,6 +188,7 @@ class ModelTrainingService:
             raise ModelTrainingError("训练股票列表为空")
 
         label_mode = "relative" if str(label_mode).lower() == "relative" else "absolute"
+        algorithm = "lightgbm" if str(algorithm).lower() in ("lightgbm", "lgbm", "gbdt") else "logistic"
         lookback_days = int(max(120, min(lookback_days, 1200)))
         horizon = int(max(1, min(horizon, 20)))
         started = datetime.now()
@@ -211,6 +213,7 @@ class ModelTrainingService:
         dates_arr = pd.to_datetime(pd.Series(all_dates), errors="coerce").to_numpy()
         model, metrics = train_model(
             X, y, epochs=epochs, lr=lr, l2=l2, embargo=horizon, dates=dates_arr,
+            algorithm=algorithm,
         )
 
         version = started.strftime("%Y%m%d_%H%M%S")
@@ -228,7 +231,7 @@ class ModelTrainingService:
         model_id = self.repo.save_model(
             name=model_name,
             version=version,
-            algorithm="logistic_regression_gd",
+            algorithm=model.to_params().get("algorithm", "logistic_regression_gd"),
             params=model.to_params(),
             feature_names=list(FEATURE_ORDER),
             trained_symbols=used_symbols,
@@ -247,6 +250,7 @@ class ModelTrainingService:
             "version": version,
             "is_active": set_active,
             "label_mode": label_mode,
+            "algorithm": model.to_params().get("algorithm", "logistic_regression_gd"),
             "symbol_count": len(used_symbols),
             "trained_symbols": used_symbols,
             "total_samples": int(len(X)),

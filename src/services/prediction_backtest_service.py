@@ -33,6 +33,7 @@ import pandas as pd
 from src.services.prediction_service import (
     FEATURE_ORDER,
     PredictionError,
+    _align_market_close,
     _load_active_model,
     _load_daily_df,
     build_features,
@@ -62,6 +63,7 @@ class PredictionBacktestService:
         use_global_model: bool = False,
         model_name: str = "trend_lr",
         label_mode: str = "absolute",
+        algorithm: str = "logistic",
     ) -> Dict[str, Any]:
         if not symbol or not symbol.strip():
             raise PredictionError("股票代码不能为空")
@@ -74,6 +76,7 @@ class PredictionBacktestService:
         threshold = float(min(max(threshold, 0.05), 0.95))
         # relative：检验"是否跑赢大盘"(剔除大盘β)；absolute：绝对涨跌
         label_mode = "relative" if str(label_mode).lower() == "relative" else "absolute"
+        algorithm = "lightgbm" if str(algorithm).lower() in ("lightgbm", "lgbm", "gbdt") else "logistic"
 
         # use_global_model=True：直接用当前“激活的全局模型”逐日打分（不重训），
         # 让回测检验的正是线上 predict_stock 真正使用的模型；否则退回“单票滚动重训”。
@@ -163,7 +166,7 @@ class PredictionBacktestService:
                 X_tr = X_all[: train_upper + 1]
                 y_tr = labels[: train_upper + 1]
                 # train_ratio=1.0：用全部可用历史训练（防未来函数已在切片层保证）
-                model, _ = train_model(X_tr, y_tr, train_ratio=1.0)
+                model, _ = train_model(X_tr, y_tr, train_ratio=1.0, algorithm=algorithm)
                 last_train_at = i
 
             up_prob = float(model.predict_proba(X_all[i])[0])

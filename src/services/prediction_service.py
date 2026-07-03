@@ -173,6 +173,7 @@ class TinyLogisticModel:
     bias: float = 0.0
     mean: np.ndarray = field(default_factory=lambda: np.zeros(0))
     std: np.ndarray = field(default_factory=lambda: np.ones(0))
+    algorithm: str = "logistic_regression_gd"
 
     def __post_init__(self) -> None:
         if self.weights.size == 0:
@@ -194,6 +195,7 @@ class TinyLogisticModel:
     def to_params(self) -> Dict[str, Any]:
         """序列化为可 JSON 存储的纯 Python 结构（供持久化）。"""
         return {
+            "algorithm": "logistic_regression_gd",
             "n_features": int(self.n_features),
             "weights": self.weights.astype(float).tolist(),
             "bias": float(self.bias),
@@ -211,6 +213,61 @@ class TinyLogisticModel:
             mean=np.asarray(params["mean"], dtype=float),
             std=np.asarray(params["std"], dtype=float),
         )
+
+
+@dataclass
+class LightGBMModel:
+    """梯度提升树模型（LightGBM）封装：与 TinyLogisticModel 同构（predict_proba /
+    to_params / from_params），供 train_model / 预测 / 回测按 algorithm 分支复用。
+
+    - 能学习特征非线性与交互（如"跌市里压低看涨""不同行业看不同因子"），
+      是相对线性逻辑回归的能力升级。
+    - 序列化用 Booster.model_to_string()（纯文本，JSON 可存）。
+    """
+
+    n_features: int
+    booster: Any = None
+    algorithm: str = "lightgbm_gbdt"
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        """输入原始特征（未标准化，树模型不需要标准化），返回涨/正类概率。"""
+        arr = np.atleast_2d(np.asarray(x, dtype=float))
+        return np.asarray(self.booster.predict(arr), dtype=float)
+
+    def shap_contrib(self, x: np.ndarray) -> np.ndarray:
+        """单样本各特征的 SHAP 贡献（有符号，长度=n_features，已去掉末尾 bias 项）。"""
+        arr = np.atleast_2d(np.asarray(x, dtype=float))
+        contrib = np.asarray(self.booster.predict(arr, pred_contrib=True), dtype=float)
+        return contrib[0, : self.n_features]
+
+    def feature_importance(self) -> np.ndarray:
+        """全局特征重要度（gain）。"""
+        try:
+            return np.asarray(self.booster.feature_importance(importance_type="gain"), dtype=float)
+        except Exception:  # noqa: BLE001
+            return np.zeros(self.n_features)
+
+    def to_params(self) -> Dict[str, Any]:
+        return {
+            "algorithm": "lightgbm_gbdt",
+            "n_features": int(self.n_features),
+            "booster": self.booster.model_to_string() if self.booster is not None else "",
+        }
+
+    @classmethod
+    def from_params(cls, params: Dict[str, Any]) -> "LightGBMModel":
+        import lightgbm as lgb
+
+        booster = lgb.Booster(model_str=params["booster"]) if params.get("booster") else None
+        return cls(n_features=int(params["n_features"]), booster=booster)
+
+
+def model_from_params(params: Dict[str, Any]):
+    """按 params['algorithm'] 还原对应模型（旧逻辑回归模型无该字段，默认逻辑回归）。"""
+    algo = (params or {}).get("algorithm", "logistic_regression_gd")
+    if algo == "lightgbm_gbdt":
+        return LightGBMModel.from_params(params)
+    return TinyLogisticModel.from_params(params)
 
 
 # ─────────────────────────────────────────────
@@ -422,6 +479,81 @@ def _fit_logistic(
     return model
 
 
+# LightGBM 默认超参：偏保守，适配金融数据高噪声、抑制过拟合。
+_GBM_DEFAULTS = dict(
+    num_leaves=31,
+    learning_rate=0.05,
+    n_estimators=300,
+    min_child_samples=200,
+    subsample=0.8,
+    colsample_bytree=0.8,
+    reg_lambda=1.0,
+)
+
+
+def _fit_lightgbm(
+    X_raw: np.ndarray,
+    y: np.ndarray,
+    *,
+    class_weight: bool,
+    params: Optional[Dict[str, Any]] = None,
+) -> "LightGBMModel":
+    """在给定样本上训练 LightGBM 二分类模型，返回封装模型。
+
+    class_weight=True 时用 scale_pos_weight=负/正 平衡类别（对齐逻辑回归口径）。
+    树模型无需标准化，直接吃原始特征。
+    """
+    import lightgbm as lgb
+
+    hp = dict(_GBM_DEFAULTS)
+    if params:
+        hp.update(params)
+    n_estimators = int(hp.pop("n_estimators", 300))
+
+    lgb_params: Dict[str, Any] = {
+        "objective": "binary",
+        "metric": "binary_logloss",
+        "num_leaves": int(hp["num_leaves"]),
+        "learning_rate": float(hp["learning_rate"]),
+        "min_child_samples": int(hp["min_child_samples"]),
+        "bagging_fraction": float(hp["subsample"]),
+        "bagging_freq": 1,
+        "feature_fraction": float(hp["colsample_bytree"]),
+        "lambda_l2": float(hp["reg_lambda"]),
+        "verbosity": -1,
+        "num_threads": 0,
+    }
+    if class_weight:
+        pos = float(max(y.sum(), 1.0))
+        neg = float(max(len(y) - y.sum(), 1.0))
+        lgb_params["scale_pos_weight"] = neg / pos
+
+    n_features = X_raw.shape[1] if X_raw.ndim == 2 else 0
+    if len(X_raw) == 0:
+        return LightGBMModel(n_features=n_features, booster=None)
+
+    dtrain = lgb.Dataset(X_raw, label=y, free_raw_data=False)
+    booster = lgb.train(lgb_params, dtrain, num_boost_round=n_estimators)
+    return LightGBMModel(n_features=n_features, booster=booster)
+
+
+def _fit_model(
+    algorithm: str,
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    epochs: int,
+    lr: float,
+    l2: float,
+    class_weight: bool,
+    gbm_params: Optional[Dict[str, Any]] = None,
+):
+    """按 algorithm 选择拟合器：'lightgbm' → 树模型；否则逻辑回归。"""
+    if algorithm == "lightgbm":
+        return _fit_lightgbm(X, y, class_weight=class_weight, params=gbm_params)
+    return _fit_logistic(X, y, epochs=epochs, lr=lr, l2=l2, class_weight=class_weight)
+
+
 def _time_split_indices(
     dates: np.ndarray, train_ratio: float, embargo: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -461,7 +593,9 @@ def train_model(
     class_weight: bool = True,
     refit_full: bool = True,
     dates: Optional[np.ndarray] = None,
-) -> tuple[TinyLogisticModel, Dict[str, Any]]:
+    algorithm: str = "logistic",
+    gbm_params: Optional[Dict[str, Any]] = None,
+) -> tuple[Any, Dict[str, Any]]:
     """按时间顺序切分并训练逻辑回归，返回 (上线模型, 评估指标)。
 
     相比朴素时序切分，这里修正了几处影响真实准确率/指标可信度的问题：
@@ -500,11 +634,12 @@ def train_model(
         X_valid, y_valid = X[valid_start:], y[valid_start:]
 
     # 评估用模型：仅在训练段拟合，验证段完全样本外（诚实估计泛化能力）
-    eval_model = _fit_logistic(
-        X_train, y_train, epochs=epochs, lr=lr, l2=l2, class_weight=class_weight,
+    eval_model = _fit_model(
+        algorithm, X_train, y_train,
+        epochs=epochs, lr=lr, l2=l2, class_weight=class_weight, gbm_params=gbm_params,
     )
 
-    def _accuracy(model: TinyLogisticModel, Xa: np.ndarray, ya: np.ndarray) -> Optional[float]:
+    def _accuracy(model: Any, Xa: np.ndarray, ya: np.ndarray) -> Optional[float]:
         if len(Xa) == 0:
             return None
         preds = (model.predict_proba(Xa) >= 0.5).astype(int)
@@ -527,12 +662,14 @@ def train_model(
 
     # 上线模型：用全部有标签样本重训，吃到最新行情；否则退回评估模型
     if refit_full and n > 0:
-        final_model = _fit_logistic(
-            X, y, epochs=epochs, lr=lr, l2=l2, class_weight=class_weight,
+        final_model = _fit_model(
+            algorithm, X, y,
+            epochs=epochs, lr=lr, l2=l2, class_weight=class_weight, gbm_params=gbm_params,
         )
     else:
         final_model = eval_model
 
+    metrics["algorithm"] = "lightgbm_gbdt" if algorithm == "lightgbm" else "logistic_regression_gd"
     return final_model, metrics
 
 
@@ -760,7 +897,7 @@ def _load_active_model(model_name: str) -> Optional[tuple[TinyLogisticModel, Dic
         )
         return None
     try:
-        model = TinyLogisticModel.from_params(record["params"])
+        model = model_from_params(record["params"])
     except Exception as exc:  # noqa: BLE001
         logger.warning("激活模型参数损坏，退回实时训练: %s", exc)
         return None
@@ -839,9 +976,18 @@ def predict_stock(
     direction = "up" if up_prob >= 0.5 else "down"
     confidence = round(abs(up_prob - 0.5) * 2.0, 4)  # 0..1
 
-    # 因子贡献 = 标准化特征值 × 权重（正=推动上涨，负=推动下跌）
-    standardized = (latest_x - model.mean) / model.std
-    contributions = standardized * model.weights
+    # 因子贡献（正=推动上涨/正类，负=推动下跌）：
+    # - 逻辑回归：标准化特征值 × 权重
+    # - LightGBM：单样本 SHAP 贡献（有符号），weight 用全局 gain 重要度作参考
+    if isinstance(model, LightGBMModel):
+        contributions = model.shap_contrib(latest_x)
+        importance = model.feature_importance()
+        imp_sum = float(importance.sum()) or 1.0
+        weights_ref = importance / imp_sum
+    else:
+        standardized = (latest_x - model.mean) / model.std
+        contributions = standardized * model.weights
+        weights_ref = model.weights
     factors: List[Dict[str, Any]] = []
     for i, key in enumerate(FEATURE_ORDER):
         factors.append(
@@ -849,7 +995,7 @@ def predict_stock(
                 "key": key,
                 "label": FEATURE_LABELS[key].get(language, FEATURE_LABELS[key]["zh"]),
                 "value": round(float(latest_x[i]), 4),
-                "weight": round(float(model.weights[i]), 4),
+                "weight": round(float(weights_ref[i]), 4),
                 "contribution": round(float(contributions[i]), 4),
             }
         )
@@ -899,7 +1045,7 @@ def predict_stock(
         "factors": factors,
         "metrics": metrics,
         "model": {
-            "algorithm": model_meta.get("algorithm", "logistic_regression_gd"),
+            "algorithm": getattr(model, "algorithm", "logistic_regression_gd"),
             "feature_count": len(FEATURE_ORDER),
             "lookback_days": lookback_days,
             "trained_samples": metrics["train_samples"] + metrics["valid_samples"],
