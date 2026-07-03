@@ -35,6 +35,7 @@ from src.services.prediction_service import (
     PredictionError,
     _load_daily_df,
     build_features,
+    load_market_df,
     train_model,
 )
 
@@ -72,7 +73,7 @@ class PredictionBacktestService:
         if df is None or df.empty:
             raise PredictionError(f"未获取到 {symbol} 的历史行情数据")
 
-        feats = build_features(df)
+        feats = build_features(df, market_df=load_market_df())
         n = len(feats)
         if n < min_train + horizon + 10:
             raise PredictionError(

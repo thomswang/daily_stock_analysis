@@ -68,12 +68,25 @@ FEATURE_LABELS: Dict[str, Dict[str, str]] = {
     # ── 换手率（数据源直供，非 OHLCV 可派生，含流通盘信息）──
     "turnover_norm": {"zh": "换手率(绝对)", "en": "Turnover rate"},
     "turnover_rel": {"zh": "换手率相对20日均值", "en": "Turnover vs 20d avg"},
+    # ── 大盘/环境（需传入指数日线 market_df；缺失时中性填 0）──
+    # A 股个股短期方向很大程度由大盘 β 驱动，补上环境维度是提准确率的最大杠杆。
+    "mkt_ma20_dev": {"zh": "大盘20日均线偏离", "en": "Index MA20 deviation"},
+    "mkt_momentum_20": {"zh": "大盘20日动量", "en": "Index 20-day momentum"},
+    "mkt_rsi_14": {"zh": "大盘RSI(14)", "en": "Index RSI(14)"},
+    "mkt_volatility_20": {"zh": "大盘20日波动率", "en": "Index 20-day volatility"},
+    "rel_strength_5": {"zh": "相对大盘强弱(5日)", "en": "Rel. strength vs index (5d)"},
+    "rel_strength_20": {"zh": "相对大盘强弱(20日)", "en": "Rel. strength vs index (20d)"},
 }
 FEATURE_ORDER = list(FEATURE_LABELS.keys())
 
-# 数据源可能不提供的扩展特征：整列缺失时以 0(中性)填充，
-# 避免这些列的 NaN 把整只股票的样本在 dropna 时清空（兼容无换手率的兜底源）。
-_OPTIONAL_FEATURES = ("turnover_norm", "turnover_rel")
+# 数据源/入参可能不提供的扩展特征：整列缺失时以 0(中性)填充，
+# 避免这些列的 NaN 把整只股票的样本在 dropna 时清空
+# （兼容无换手率的兜底源，以及未传入 market_df 的调用方）。
+_MARKET_FEATURES = (
+    "mkt_ma20_dev", "mkt_momentum_20", "mkt_rsi_14", "mkt_volatility_20",
+    "rel_strength_5", "rel_strength_20",
+)
+_OPTIONAL_FEATURES = ("turnover_norm", "turnover_rel") + _MARKET_FEATURES
 
 # 标签口径（默认）：预测"未来 N 日"方向，而非噪声很大的"次日"。
 # N 日趋势信噪比更高；threshold 可要求"涨幅超过阈值"才记为看涨（默认 0=纯方向）。
@@ -185,32 +198,40 @@ def _macd_hist(close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
     return (dif - dea) * 2
 
 
-def build_features(df: pd.DataFrame) -> pd.DataFrame:
+def _align_market_close(dates: pd.Series, market_df: Optional[pd.DataFrame]) -> pd.Series:
+    """把大盘指数收盘价按交易日对齐到个股的 date 序列，返回等长(同索引 0..n-1)的 Series。
+
+    market_df=None/空/无 close 时返回全 NaN（调用方按中性 0 处理，行为向后兼容）。
+    仅左连接、不前向填充：对不上的交易日留 NaN，避免用其它日的大盘值污染。
+    """
+    n = len(dates)
+    empty = pd.Series(np.nan, index=range(n), dtype=float)
+    if market_df is None or market_df.empty or "close" not in market_df.columns:
+        return empty
+    left = pd.DataFrame({"_d": pd.to_datetime(pd.Series(list(dates)), errors="coerce")})
+    right = pd.DataFrame({
+        "_d": pd.to_datetime(market_df["date"], errors="coerce"),
+        "_mc": pd.to_numeric(market_df["close"], errors="coerce"),
+    }).dropna(subset=["_d"]).drop_duplicates(subset=["_d"], keep="last")
+    merged = left.merge(right, on="_d", how="left")
+    return merged["_mc"].astype(float).reset_index(drop=True)
+
+
+def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """由日线 DataFrame 构造技术因子矩阵。
 
-    df 需包含列：date, open, high, low, close, volume
+    df 需包含列：date, open, high, low, close, volume（可选 turnover_rate）
+    market_df：可选的大盘指数日线（需含 date, close）。传入则派生"大盘环境/相对
+        强弱"特征；不传则这些列整列缺失、按 _OPTIONAL_FEATURES 中性填 0（行为向后兼容）。
     返回：包含 FEATURE_ORDER 各列 + close + date 的 DataFrame（已 dropna）
 
     所有因子仅用当日及更早数据（rolling/shift 回看），保证防未来函数；
     并做无量纲归一化（比例/相对价格/0~1 区间），避免量纲干扰梯度下降。
+
+    TODO(准确率优化 · 第二阶段：模型升级 LightGBM) —— 视第一阶段回测结果再定。
+    若线性模型天花板明显（环境特征重训回测后仍不足），再引入 LightGBM（需加依赖，
+    并在 train_model()/预测加载处按 algorithm 字段分支）。
     """
-    # ============================================================
-    # TODO(准确率优化 · 第一阶段②：大盘/板块环境特征) —— 下次对话续做
-    # 现状：第一阶段①(改标签→未来5日方向)已完成；②因本地缺指数日线暂缓。
-    # 前置：先回填指数日线（沪深300 000300 / 上证 000001 / 创业板 399006 等，
-    #       几个代码即可，别和全量回填抢限流源，等 backfill_v2 跑完再单独抓）。
-    # 做法：给本函数加可选入参 market_df（指数日线，按 date 对齐 merge 进来），
-    #       派生环境因子：个股相对大盘强弱(个股收益-大盘收益)、大盘MA偏离/动量/RSI。
-    #       同换手率一样加入 _OPTIONAL_FEATURES：缺失时中性填 0，绝不因缺指数而崩。
-    #       调用点需同步传入：predict_stock / model_training_service._collect_samples /
-    #       prediction_backtest_service（指数只加载一次并缓存，避免逐票重复抓）。
-    #
-    # TODO(准确率优化 · 第二阶段：模型升级 LightGBM) —— 视第一阶段回测结果再定
-    # 触发条件：等①(改标签)+②(环境特征)重训并回测出胜率/资金曲线后，
-    #           若线性模型(logistic_regression_gd)天花板明显，再引入 LightGBM。
-    # 注意：LightGBM 需新增第三方依赖(lightgbm)，加依赖前先确认收益值得，
-    #       并在 train_model()/预测加载处做算法分支(algorithm 字段已入库可区分)。
-    # ============================================================
     data = df.copy()
     data = data.sort_values("date").reset_index(drop=True)
     close = data["close"].astype(float)
@@ -287,6 +308,24 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     turn_ma20 = turnover.rolling(20, min_periods=5).mean()
     feats["turnover_norm"] = turnover / 100.0                              # 绝对换手率(小数)
     feats["turnover_rel"] = (turnover / turn_ma20.replace(0, np.nan)) - 1.0  # 相对20日均值的活跃度
+
+    # ── 大盘/环境（需 market_df；缺失则整列 NaN，后续中性填 0）──
+    mkt_close = _align_market_close(data["date"], market_df)
+    mkt_ret = mkt_close.pct_change(fill_method=None)
+    mkt_ma20 = mkt_close.rolling(20, min_periods=20).mean()
+    feats["mkt_ma20_dev"] = (mkt_close - mkt_ma20) / mkt_ma20
+    feats["mkt_momentum_20"] = mkt_close.pct_change(periods=20, fill_method=None)
+    feats["mkt_rsi_14"] = _rsi(mkt_close, 14) / 100.0
+    feats["mkt_volatility_20"] = mkt_ret.rolling(20, min_periods=20).std()
+    # 相对强弱：个股收益 − 大盘收益（>0 表示跑赢大盘）
+    feats["rel_strength_5"] = (
+        close.pct_change(periods=5, fill_method=None)
+        - mkt_close.pct_change(periods=5, fill_method=None)
+    )
+    feats["rel_strength_20"] = (
+        close.pct_change(periods=20, fill_method=None)
+        - mkt_close.pct_change(periods=20, fill_method=None)
+    )
 
     feats = feats.replace([np.inf, -np.inf], np.nan)
     # 可选特征（换手率）在数据源缺失时整列为 NaN：填 0 中性值，
@@ -593,6 +632,37 @@ def _safe_stock_name(stock_code: str) -> Optional[str]:
         return None
 
 
+# 全市场 β 基准指数（沪深300）；个股环境特征统一以它为参照。
+DEFAULT_MARKET_INDEX = "000300.SH"
+_MARKET_DF_CACHE: Dict[str, pd.DataFrame] = {}
+
+
+def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
+    """读取大盘指数日线（date, close）供环境特征使用；进程内缓存，避免逐票重复查库。
+
+    数据来自本地 stock_daily（由 backfill_index.py 回填）。查不到则返回空 DataFrame，
+    build_features 会据此把大盘特征中性填 0（不影响其余流程）。
+    """
+    if index_code in _MARKET_DF_CACHE:
+        return _MARKET_DF_CACHE[index_code]
+    df = pd.DataFrame()
+    try:
+        from datetime import date as _date
+
+        from src.repositories.stock_repo import StockRepository
+
+        rows = StockRepository().get_range(index_code, _date(2000, 1, 1), _date.today())
+        if rows:
+            df = pd.DataFrame([{"date": r.date, "close": r.close} for r in rows])
+            df = df.sort_values("date").reset_index(drop=True)
+    except Exception as exc:  # noqa: BLE001 - 缺指数不应中断预测/训练
+        logger.debug("加载大盘指数 %s 失败（将中性处理）: %s", index_code, exc)
+    if df.empty:
+        logger.warning("大盘指数 %s 无本地数据，环境特征将中性填 0；建议先跑 backfill_index.py", index_code)
+    _MARKET_DF_CACHE[index_code] = df
+    return df
+
+
 def _load_active_model(model_name: str) -> Optional[tuple[TinyLogisticModel, Dict[str, Any]]]:
     """尝试加载已持久化的激活模型；无或损坏则返回 None（退回实时训练）。"""
     try:
@@ -647,7 +717,7 @@ def predict_stock(
     if df is None or df.empty:
         raise PredictionError(f"未获取到 {stock_code} 的历史行情数据")
 
-    feats = build_features(df)
+    feats = build_features(df, market_df=load_market_df())
     if feats.empty:
         raise PredictionError(
             f"有效样本不足（仅 {len(feats)} 条），无法构造特征；请换个数据更全的标的或加大回溯天数"

@@ -36,6 +36,7 @@ from src.services.prediction_service import (
     PredictionError,
     _load_daily_df,
     build_features,
+    load_market_df,
     make_labels,
     train_model,
 )
@@ -99,10 +100,8 @@ class ModelTrainingService:
                 logger.warning("[train] %s 无数据，跳过", code)
                 continue
 
-            # TODO(第一阶段②·下次续做): 待指数日线回填后，这里改为
-            #   feats = build_features(df, market_df=<缓存的指数日线>)
-            #   以引入大盘/板块环境因子（详见 prediction_service.build_features 顶部 TODO）。
-            feats = build_features(df)
+            # 大盘环境因子：传入指数日线（load_market_df 进程内缓存，只查一次库）
+            feats = build_features(df, market_df=load_market_df())
             if len(feats) < max(30, horizon + 20):
                 logger.info("[train] %s 有效样本过少(%d)，跳过", code, len(feats))
                 continue
@@ -180,8 +179,11 @@ class ModelTrainingService:
         model, metrics = train_model(X, y, epochs=epochs, lr=lr, l2=l2, embargo=horizon)
 
         version = started.strftime("%Y%m%d_%H%M%S")
-        start_date = min(all_dates) if all_dates else None
-        end_date = max(all_dates) if all_dates else None
+        # 统一归一到 date 再比较：样本可能同时来自缓存(datetime.date)与
+        # 联网(pandas.Timestamp)，直接 min/max 会因类型混用报 TypeError。
+        _norm_dates = [d for d in (_as_date(x) for x in all_dates) if d is not None]
+        start_date = min(_norm_dates) if _norm_dates else None
+        end_date = max(_norm_dates) if _norm_dates else None
 
         model_id = self.repo.save_model(
             name=model_name,
