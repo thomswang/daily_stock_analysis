@@ -1133,6 +1133,113 @@ def predict_stock(
     return result
 
 
+DEFAULT_RANK_MODEL = "trend_xsec"
+
+
+def rank_stocks(
+    codes: List[str],
+    *,
+    model_name: str = DEFAULT_RANK_MODEL,
+    lookback_days: int = 250,
+    top_n: Optional[int] = None,
+    language: str = "zh",
+) -> Dict[str, Any]:
+    """横截面选股打分：用激活的横截面模型给一批股票打「强弱分」并排序。
+
+    这是经 walk-forward / CPCV 验证、扣成本能跑赢市场的用法：模型对单票的绝对
+    涨跌预测能力有限(≈天花板)，但对「同一时点谁比谁强」的横向排序有稳定 alpha
+    (CPCV 28 条样本外路径 Rank IC 100% 为正)。故按用途拆分：
+        - /predict  单票方向(绝对涨跌)——沿用旧口径，向后兼容
+        - rank_stocks 横截面强弱打分+概率加权建议权重——本函数
+
+    流程：逐票取最新特征 → 横截面模型输出「属当日强势前50%的概率」=强弱分 →
+    在传入这批票内做分位排名 → 概率加权(去均值后取正、归一)给出多头建议权重。
+
+    Args:
+        codes: 待打分的股票代码列表
+        model_name: 横截面模型名(默认 trend_xsec，须为已激活的 cross_section 模型)
+        lookback_days: 每只票的回溯天数(用于构造特征)
+        top_n: 只返回强弱分最高的前 N 只(None=全部返回)
+        language: 预留(当前仅影响错误文案)
+
+    Returns:
+        {as_of_date, model:{...}, count, items:[{code, stock_name, strength_score,
+         rank, rank_pct, suggested_weight, last_close, as_of_date}], disclaimer}
+    """
+    codes = [c.strip() for c in (codes or []) if c and c.strip()]
+    if not codes:
+        raise PredictionError("待打分的股票列表为空")
+
+    loaded = _load_active_model(model_name)
+    if loaded is None:
+        raise PredictionError(
+            f"未找到已激活的横截面模型 {model_name}；请先运行 "
+            f"train_model.py --all --label-mode cross_section --algorithm lightgbm --name {model_name}"
+        )
+    model, record = loaded
+    market_df = load_market_df()
+
+    scored: List[Dict[str, Any]] = []
+    for code in codes:
+        try:
+            df, name = _load_daily_df(code, lookback_days, resolve_name=True)
+            if df is None or df.empty:
+                continue
+            feats = build_features(df, market_df=market_df)
+            if feats.empty:
+                continue
+            latest = feats.iloc[-1]
+            x = latest[FEATURE_ORDER].to_numpy(dtype=float)
+            score = float(model.predict_proba(x)[0])
+            scored.append({
+                "code": code,
+                "stock_name": name,
+                "strength_score": round(score, 4),
+                "last_close": round(float(latest["close"]), 4),
+                "as_of_date": str(latest["date"])[:10],
+            })
+        except PredictionError as exc:
+            logger.info("[rank] 跳过 %s：%s", code, exc)
+        except Exception as exc:  # noqa: BLE001 - 单票失败不应中断整批打分
+            logger.warning("[rank] %s 打分异常，跳过：%s", code, exc)
+
+    if not scored:
+        raise PredictionError("所有股票均无足够数据完成打分；请检查代码或稍后重试")
+
+    # 横截面分位排名 + 概率加权多头建议权重(去均值后取正、归一，∑=1)
+    n = len(scored)
+    s = np.array([it["strength_score"] for it in scored], dtype=float)
+    pct = pd.Series(s).rank(pct=True, method="average").to_numpy()  # (0,1]
+    centered = pct - pct.mean()
+    pos = np.clip(centered, 0.0, None)
+    w = pos / (pos.sum() or 1.0)
+    order = np.argsort(-s)  # 强→弱
+    for rank_i, idx in enumerate(order, start=1):
+        scored[idx]["rank"] = rank_i
+        scored[idx]["rank_pct"] = round(float(pct[idx]), 4)
+        scored[idx]["suggested_weight"] = round(float(w[idx]), 4)
+
+    items = [scored[i] for i in order]
+    if top_n is not None and top_n > 0:
+        items = items[:top_n]
+
+    as_of = max((it["as_of_date"] for it in scored), default=None)
+    return {
+        "as_of_date": as_of,
+        "model": {
+            "name": record.get("name"),
+            "version": record.get("version"),
+            "algorithm": getattr(model, "algorithm", "lightgbm_gbdt"),
+            "label_mode": "cross_section",
+            "trained_at": record.get("created_at"),
+        },
+        "count": len(items),
+        "scored_total": n,
+        "items": items,
+        "disclaimer": "强弱分为横截面相对排序(非绝对涨跌概率)，仅供技术研究，不构成投资建议。",
+    }
+
+
 def _persist_prediction(result: Dict[str, Any], model_meta: Dict[str, Any]) -> None:
     """把一次预测结果落库（失败仅记日志，绝不影响预测返回）。"""
     try:

@@ -164,6 +164,43 @@ class PredictionBacktestResponse(BaseModel):
     disclaimer: str
 
 
+class RankRequest(BaseModel):
+    codes: Optional[List[str]] = Field(
+        None, description="待打分的股票代码列表；留空则使用 .env 的 STOCK_LIST 自选股"
+    )
+    lookback_days: int = Field(250, ge=60, le=800, description="每只票特征回溯天数")
+    top_n: Optional[int] = Field(None, ge=1, le=500, description="只返回强弱分最高的前 N 只(留空=全部)")
+    model_name: str = Field("trend_xsec", description="横截面模型名(须为已激活的 cross_section 模型)")
+
+
+class RankItem(BaseModel):
+    code: str
+    stock_name: Optional[str] = None
+    strength_score: float = Field(..., description="强弱分 0~1：属当日强势前50%的概率(越高越强)")
+    rank: int = Field(..., description="在本批内的强弱名次(1=最强)")
+    rank_pct: float = Field(..., description="强弱分位 0~1")
+    suggested_weight: float = Field(..., description="概率加权多头建议权重(∑=1)")
+    last_close: float
+    as_of_date: str
+
+
+class RankModelInfo(BaseModel):
+    name: Optional[str] = None
+    version: Optional[str] = None
+    algorithm: str
+    label_mode: str
+    trained_at: Optional[str] = None
+
+
+class RankResponse(BaseModel):
+    as_of_date: Optional[str] = None
+    model: RankModelInfo
+    count: int
+    scored_total: int = Field(..., description="实际完成打分的股票数")
+    items: List[RankItem] = Field(default_factory=list)
+    disclaimer: str
+
+
 class PredictionResponse(BaseModel):
     stock_code: str
     stock_name: Optional[str] = None

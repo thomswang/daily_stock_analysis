@@ -26,8 +26,10 @@ from api.v1.schemas.prediction import (
     PredictionHistoryResponse,
     PredictionRequest,
     PredictionResponse,
+    RankRequest,
+    RankResponse,
 )
-from src.services.prediction_service import PredictionError, predict_stock
+from src.services.prediction_service import PredictionError, predict_stock, rank_stocks
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,65 @@ def predict(request: PredictionRequest) -> PredictionResponse:
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"股价预测失败: {str(exc)}"},
+        )
+
+
+@router.post(
+    "/rank",
+    response_model=RankResponse,
+    responses={
+        200: {"description": "打分完成"},
+        400: {"description": "数据不足或参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="横截面选股打分/排序",
+    description=(
+        "用已激活的横截面模型(trend_xsec)给一批股票打「强弱分」并按概率加权排序。"
+        "相比单票涨跌预测，横截面排序经 walk-forward / CPCV 验证有稳定 alpha，"
+        "扣成本后能跑赢等权基准。强弱分为相对排序(非绝对涨跌概率)，不构成投资建议。"
+    ),
+)
+def prediction_rank(request: RankRequest) -> RankResponse:
+    """对一批股票做横截面强弱打分与排序（同步 def，FastAPI 自动放入线程池）。"""
+    codes = request.codes
+    if not codes:
+        # 未指定则回退到 .env 自选股列表
+        try:
+            from src.config import get_config
+
+            cfg = get_config()
+            try:
+                cfg.refresh_stock_list()
+            except Exception:  # noqa: BLE001
+                pass
+            codes = list(getattr(cfg, "stock_list", []) or [])
+        except Exception:  # noqa: BLE001
+            codes = []
+    if not codes:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "empty_codes", "message": "未提供股票代码，且自选股列表为空"},
+        )
+    try:
+        result = rank_stocks(
+            codes,
+            model_name=request.model_name,
+            lookback_days=request.lookback_days,
+            top_n=request.top_n,
+        )
+        return RankResponse(**result)
+    except PredictionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "rank_failed", "message": str(exc)},
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"选股打分失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"选股打分失败: {str(exc)}"},
         )
 
 
