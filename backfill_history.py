@@ -175,7 +175,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fresh-days", type=int, default=4, help="DB 最新日期距今≤该天数则视为已最新并跳过（默认 4）")
     parser.add_argument("--force", action="store_true", help="忽略已最新判断，强制按 start 重拉")
     parser.add_argument("--retry", type=int, default=1, help="单只失败重试次数（默认 1）")
-    parser.add_argument("--retry-failed", action="store_true", help="仅处理台账中未完成/失败的代码")
+    parser.add_argument("--retry-failed", action="store_true",
+                        help="仅重试台账中 failed 的代码（不含 done/skipped/empty；empty=确定无数据如次新股）")
     parser.add_argument("--sleep", type=float, default=0.5, help="每次请求后的限流秒数（默认 0.5）")
     parser.add_argument("--limit", type=int, default=None, help="仅处理前 N 只（试跑）")
     # 台账与调度

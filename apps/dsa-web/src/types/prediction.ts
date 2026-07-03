@@ -43,6 +43,12 @@ export interface ModelInfo {
   featureCount: number;
   lookbackDays: number;
   trainedSamples: number;
+  /** trained = loaded a persisted offline-trained model; on_the_fly = trained live for this request. */
+  source?: 'trained' | 'on_the_fly' | null;
+  /** Persisted model version (only when source = trained). */
+  version?: string | null;
+  /** ISO timestamp of when the persisted model was trained (only when source = trained). */
+  trainedAt?: string | null;
 }
 
 export interface PredictionRecordItem {

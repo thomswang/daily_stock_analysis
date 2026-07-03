@@ -68,6 +68,10 @@ const TEXT = {
     weight: '权重',
     value: '因子值',
     disclaimerTitle: '风险提示',
+    sourceTrained: '离线训练模型',
+    sourceOnTheFly: '实时训练',
+    modelVersion: '版本',
+    trainedAt: '训练于',
   },
   en: {
     documentTitle: 'Trend Prediction · DSA',
@@ -107,8 +111,29 @@ const TEXT = {
     weight: 'Weight',
     value: 'Value',
     disclaimerTitle: 'Disclaimer',
+    sourceTrained: 'Offline-trained model',
+    sourceOnTheFly: 'Trained live',
+    modelVersion: 'Version',
+    trainedAt: 'Trained at',
   },
 } as const;
+
+// Map raw backend algorithm ids to friendly display names.
+const ALGORITHM_LABELS: Record<string, string> = {
+  lightgbm_gbdt: 'LightGBM',
+  logistic_regression_gd: 'Logistic Regression',
+};
+
+function algorithmLabel(algorithm: string): string {
+  return ALGORITHM_LABELS[algorithm] ?? algorithm;
+}
+
+function formatTrainedAt(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return String(value).slice(0, 19).replace('T', ' ');
+  return parsed.toLocaleString();
+}
 
 // ============ Helpers ============
 
@@ -418,9 +443,22 @@ const PredictionPage: React.FC = () => {
                 />
               </div>
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Badge variant="info">{text.algorithm}: {result.model.algorithm}</Badge>
+                <Badge variant="info">{text.algorithm}: {algorithmLabel(result.model.algorithm)}</Badge>
+                {result.model.source ? (
+                  <Badge variant={result.model.source === 'trained' ? 'success' : 'default'}>
+                    {result.model.source === 'trained' ? text.sourceTrained : text.sourceOnTheFly}
+                    {result.model.source === 'trained' && result.model.version
+                      ? ` · ${text.modelVersion} ${result.model.version}`
+                      : ''}
+                  </Badge>
+                ) : null}
                 <Badge variant="default">features: {result.model.featureCount}</Badge>
-                <Badge variant="default">epochs: {result.metrics.epochs}</Badge>
+                {result.metrics.epochs > 0 ? (
+                  <Badge variant="default">epochs: {result.metrics.epochs}</Badge>
+                ) : null}
+                {result.model.source === 'trained' && formatTrainedAt(result.model.trainedAt) ? (
+                  <Badge variant="default">{text.trainedAt} {formatTrainedAt(result.model.trainedAt)}</Badge>
+                ) : null}
               </div>
             </Card>
           </div>

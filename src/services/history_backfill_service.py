@@ -53,6 +53,34 @@ class BackfillError(Exception):
     """回填流程可预期的业务错误（清单缺失等）。"""
 
 
+# 瞬时/环境类故障信号：出现任一则判为“可重试失败”，绝不当成“无数据”。
+_TRANSIENT_ERROR_MARKERS = (
+    "CircuitOpen", "熔断", "Connection", "RemoteDisconnected", "Timeout",
+    "timed out", "ProtocolError", "Max retries", "SSL", "ReadTimeout",
+    "ConnectionError", "Proxy", "代理", "reset by peer", "aborted",
+)
+# “确定无数据”信号：数据源明确回“查不到该票数据”（如次新股在请求区间尚未上市）。
+_NO_DATA_MARKERS = (
+    "未查询到", "未获取到", "无数据", "没有数据", "暂无数据", "查询不到",
+    "no data", "not found", "返回空", "空日线",
+)
+
+
+def _is_no_data_error(err: Optional[str]) -> bool:
+    """聚合错误是否表示“该票在请求区间确定无数据”（终态，不必重试）。
+
+    判定原则（保守）：仅当错误里出现“无数据”类信号、且**不含任何**“熔断/网络/超时”
+    等瞬时故障信号时才判为无数据。若两类信号混杂（例如部分源熔断、部分源查无数据），
+    则无法确认有数据的源是否真的没有数据，故保守判为可重试失败，交由下次重试自愈——
+    届时若数据源健康仍统一回“查无数据”，才会被正确标记为 empty。
+    """
+    if not err:
+        return False
+    if any(m in err for m in _TRANSIENT_ERROR_MARKERS):
+        return False
+    return any(m in err for m in _NO_DATA_MARKERS)
+
+
 # ─────────────────────────────────────────────
 # 进度台账（断点续传的持久化）
 # ─────────────────────────────────────────────
@@ -191,8 +219,8 @@ class HistoryBackfillService:
             sleep: 每次实际请求后的限流秒数
             retry: 单只失败重试次数
             fresh_days: DB 最新日期距今 <= 该自然日数则视为“已最新”，跳过
-            force: 忽略“已最新”判断，强制按 start 重新拉
-            retry_failed: 仅处理台账中 status=failed/未完成 的代码
+            force: 忽略“已最新”判断，强制按 start 重新拉（并复查已标记 empty 的票）
+            retry_failed: 仅处理台账中 status=failed 的代码（不含 done/skipped/empty）
             limit: 仅处理前 N 只（试跑）
             progress_path: 进度台账路径
         """
@@ -208,11 +236,16 @@ class HistoryBackfillService:
         ledger = ProgressLedger(progress_path)
         ledger.set_meta(start_date=start_date, end_date=end_date, mode=mode)
 
-        # 仅重试失败的
+        # 已确认“无数据”的票（如次新股在早年尚未上市）：非 force 时跳过，避免反复空请求。
+        # 需要复查（例如怀疑此前误判）时加 --force 即可强制重拉。
+        if not force:
+            codes = [c for c in codes if ledger.get(c).get("status") != "empty"]
+
+        # 仅重试失败的（不含已完成/已跳过/已确认无数据）
         if retry_failed:
             codes = [
                 c for c in codes
-                if ledger.get(c).get("status") not in ("done", "skipped")
+                if ledger.get(c).get("status") not in ("done", "skipped", "empty")
             ]
         if limit is not None:
             codes = codes[:limit]
@@ -238,10 +271,16 @@ class HistoryBackfillService:
             if not code:
                 continue
 
+            # 该票历史上已请求过的最早起始日（水位线）：用于避免反复探测“史前”空区间
+            prev_min = _parse_date(ledger.get(code).get("min_start") or "")
+            # 非失败结束后，把本次 start 并入水位线（失败不并入，保证重试仍会补齐）
+            new_min = start_d if prev_min is None else min(prev_min, start_d)
+
             try:
                 result = self._backfill_one(
                     code, start_d=start_d, end_d=end_d, mode=mode,
                     retry=retry, fresh_days=fresh_days, force=force, sleep=sleep,
+                    min_attempted=prev_min,
                 )
             except Exception as exc:  # noqa: BLE001 - 单只异常不应中断整体
                 logger.warning("[%d/%d] %s 回填异常：%s", i, total, code, exc)
@@ -253,11 +292,12 @@ class HistoryBackfillService:
             action = result["action"]
             if action == "skipped":
                 stats["skipped"] += 1
-                ledger.update(code, status="done", note="fresh",
+                ledger.update(code, status="done", note="fresh", min_start=_iso(new_min),
                               last=_iso(result.get("last")), rows=result.get("rows"))
             elif action == "empty":
                 stats["empty"] += 1
-                ledger.update(code, status="empty", error="数据源返回空")
+                ledger.update(code, status="empty", min_start=_iso(new_min),
+                              error=result.get("error") or "数据源返回空")
             elif action == "failed":
                 stats["failed"] += 1
                 ledger.update(code, status="failed", error=result.get("error"))
@@ -265,7 +305,7 @@ class HistoryBackfillService:
                 stats["fetched"] += 1
                 stats["rows_added"] += result.get("added", 0)
                 ledger.update(
-                    code, status="done", error=None,
+                    code, status="done", error=None, min_start=_iso(new_min),
                     first=_iso(result.get("first")), last=_iso(result.get("last")),
                     rows=result.get("rows"), source=result.get("source"),
                 )
@@ -293,6 +333,7 @@ class HistoryBackfillService:
     def _backfill_one(
         self, code: str, *, start_d: date, end_d: date, mode: str,
         retry: int, fresh_days: int, force: bool, sleep: float,
+        min_attempted: Optional[date] = None,
     ) -> Dict[str, Any]:
         """处理单只股票，返回 {action, ...}。action ∈ skipped/fetched/empty/failed。"""
         coverage = self.repo.get_coverage(code)
@@ -303,6 +344,7 @@ class HistoryBackfillService:
         segments = self._plan_segments(
             start_d=start_d, end_d=end_d, first=first, last=last,
             mode=mode, fresh_days=fresh_days, force=force,
+            min_attempted=None if force else min_attempted,
         )
         if not segments:
             return {"action": "skipped", "last": last, "rows": coverage.get("rows", 0)}
@@ -325,6 +367,9 @@ class HistoryBackfillService:
                     logger.warning("%s 分段 %s~%s 拉取失败：%s（已保留其余段）",
                                    code, seg_start, seg_end, err)
                     continue
+                # “确定无数据”（如次新股在请求区间尚未上市）→ 记为 empty 终态，不再重试
+                if _is_no_data_error(err):
+                    return {"action": "empty", "error": err}
                 return {"action": "failed", "error": err}
             if df is None or df.empty:
                 continue
@@ -347,7 +392,7 @@ class HistoryBackfillService:
     @staticmethod
     def _plan_segments(
         *, start_d: date, end_d: date, first: Optional[date], last: Optional[date],
-        mode: str, fresh_days: int, force: bool,
+        mode: str, fresh_days: int, force: bool, min_attempted: Optional[date] = None,
     ) -> List["_Seg"]:
         """根据模式与 DB 已有覆盖，规划需要请求的区间段。
 
@@ -355,19 +400,27 @@ class HistoryBackfillService:
         - incremental：只补 [last+1, end] 的往后缺口。
         - smart：按 DB 覆盖计算前后缺口——start<first 补前段、end>last 补后段，
                  从而支持“先拉近段、后补更早历史”而不重复请求。
+
+        min_attempted：该票历史上已请求过的最早起始日（水位线）。若本次 start 不早于
+        水位线，说明 [start, first) 这段“史前”区间此前已探测过且确认无更多数据（否则
+        first 早就前移了），无需再空请求——次新股/上市前区间因此只会被探测一次。
         """
         # 强制：无脑整段重拉
         if force:
             return [(start_d, end_d)] if start_d <= end_d else []
 
-        # DB 无数据 → 直接整段
+        # DB 无数据 → 直接整段；但若此前已按更早/相同起点探测过仍无数据，则不再空请求
         if first is None or last is None:
+            if min_attempted is not None and start_d >= min_attempted:
+                return []
             return [(start_d, end_d)] if start_d <= end_d else []
 
         if mode == "smart":
             segs: List["_Seg"] = []
-            if start_d < first:
-                segs.append((start_d, first - timedelta(days=1)))  # 往前补历史
+            # 前向缺口只取“尚未探测过”的更早一段：边界取 first 与水位线中的较早者
+            front_boundary = first if min_attempted is None else min(first, min_attempted)
+            if start_d < front_boundary:
+                segs.append((start_d, front_boundary - timedelta(days=1)))  # 往前补历史
             if end_d > last:
                 segs.append((last + timedelta(days=1), end_d))     # 往后补增量
             return segs
