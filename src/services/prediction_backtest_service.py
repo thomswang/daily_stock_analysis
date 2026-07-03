@@ -33,6 +33,7 @@ import pandas as pd
 from src.services.prediction_service import (
     FEATURE_ORDER,
     PredictionError,
+    _load_active_model,
     _load_daily_df,
     build_features,
     load_market_df,
@@ -58,6 +59,8 @@ class PredictionBacktestService:
         threshold: float = 0.5,
         allow_short: bool = False,
         refresh: bool = True,
+        use_global_model: bool = False,
+        model_name: str = "trend_lr",
     ) -> Dict[str, Any]:
         if not symbol or not symbol.strip():
             raise PredictionError("股票代码不能为空")
@@ -68,6 +71,18 @@ class PredictionBacktestService:
         retrain_every = int(max(1, min(retrain_every, 60)))
         min_train = int(max(30, min(min_train, 500)))
         threshold = float(min(max(threshold, 0.05), 0.95))
+
+        # use_global_model=True：直接用当前“激活的全局模型”逐日打分（不重训），
+        # 让回测检验的正是线上 predict_stock 真正使用的模型；否则退回“单票滚动重训”。
+        global_model = None
+        if use_global_model:
+            loaded = _load_active_model(model_name)
+            if not loaded:
+                raise PredictionError(
+                    f"未找到激活的全局模型 {model_name}，无法用全局模型回测；"
+                    "请先训练并激活模型，或改用单票滚动重训模式"
+                )
+            global_model, _rec = loaded
 
         df, stock_name = _load_daily_df(symbol, lookback_days, refresh=refresh)
         if df is None or df.empty:
@@ -116,7 +131,9 @@ class PredictionBacktestService:
             if train_upper < min_train - 1:
                 continue
 
-            if model is None or (i - last_train_at) >= retrain_every:
+            if global_model is not None:
+                model = global_model  # 固定用激活的全局模型，不重训
+            elif model is None or (i - last_train_at) >= retrain_every:
                 X_tr = X_all[: train_upper + 1]
                 y_tr = labels[: train_upper + 1]
                 # train_ratio=1.0：用全部可用历史训练（防未来函数已在切片层保证）
@@ -181,6 +198,7 @@ class PredictionBacktestService:
             "retrain_every": retrain_every,
             "threshold": round(threshold, 4),
             "allow_short": allow_short,
+            "model_mode": "global" if global_model is not None else "per_stock",
             "start_date": points[0]["date"],
             "end_date": points[-1]["date"],
             "n_predictions": n_pred,
@@ -192,7 +210,15 @@ class PredictionBacktestService:
             "actual_up_ratio": round(actual_up_count / n_pred, 4),
             **equity,
             "points": points,
-            "disclaimer": "回测基于历史数据滚动步进检验，过往表现不代表未来收益，不构成任何投资建议。",
+            "disclaimer": (
+                "回测基于历史数据滚动步进检验，过往表现不代表未来收益，不构成任何投资建议。"
+                + (
+                    "【注意】global 模式复用已训练好的全局模型逐日打分，该模型训练时"
+                    "已包含此区间数据，结果偏乐观（属样本内一致性检验）；无偏样本外"
+                    "估计请用 per_stock 单票滚动重训模式。"
+                    if global_model is not None else ""
+                )
+            ),
         }
 
     def _build_equity(

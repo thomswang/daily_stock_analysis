@@ -28,6 +28,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 
 from src.services.prediction_service import (
     DEFAULT_LABEL_HORIZON,
@@ -176,7 +177,12 @@ class ModelTrainingService:
             len(X), len(used_symbols), 100.0 * float(y.mean()) if len(y) else 0.0,
         )
 
-        model, metrics = train_model(X, y, epochs=epochs, lr=lr, l2=l2, embargo=horizon)
+        # 传入与 X 行对齐的日期，启用“全局时序切分”（按日历切 train/valid，
+        # 避免多股票堆叠时按行切退化成按股票切、时间段重叠而泄露）。
+        dates_arr = pd.to_datetime(pd.Series(all_dates), errors="coerce").to_numpy()
+        model, metrics = train_model(
+            X, y, epochs=epochs, lr=lr, l2=l2, embargo=horizon, dates=dates_arr,
+        )
 
         version = started.strftime("%Y%m%d_%H%M%S")
         # 统一归一到 date 再比较：样本可能同时来自缓存(datetime.date)与

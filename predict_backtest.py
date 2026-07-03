@@ -56,6 +56,8 @@ def _fmt_pct(v: Optional[float]) -> str:
 def _print_report(r: dict) -> None:
     print("\n===== 预测回测报告 =====")
     print(f"标的:       {r['stock_code']}  {r.get('stock_name') or ''}")
+    _mode = r.get("model_mode", "per_stock")
+    print(f"模型模式:   {'全局模型(样本内)' if _mode == 'global' else '单票滚动重训(样本外)'}")
     print(f"评估区间:   {r['start_date']} ~ {r['end_date']}")
     print(f"参数:       horizon={r['horizon_days']}  lookback={r['lookback_days']}  "
           f"retrain_every={r['retrain_every']}  threshold={r['threshold']}  allow_short={r['allow_short']}")
@@ -89,6 +91,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--threshold", type=float, default=0.5, help="看涨概率阈值（默认 0.5）")
     p.add_argument("--allow-short", action="store_true", help="资金曲线允许做空")
     p.add_argument("--no-refresh", action="store_true", help="不联网，仅用本地缓存")
+    p.add_argument("--global-model", action="store_true",
+                   help="用当前激活的全局模型逐日打分(检验线上模型;样本内偏乐观),否则单票滚动重训")
+    p.add_argument("--model-name", type=str, default="trend_lr", help="全局模型名(默认 trend_lr)")
     p.add_argument("--debug", action="store_true", help="调试日志")
     return p.parse_args()
 
@@ -117,6 +122,8 @@ def main() -> int:
             threshold=args.threshold,
             allow_short=args.allow_short,
             refresh=not args.no_refresh,
+            use_global_model=args.global_model,
+            model_name=args.model_name,
         )
     except PredictionError as exc:
         raise SystemExit(f"回测失败：{exc}")

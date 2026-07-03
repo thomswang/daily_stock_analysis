@@ -386,6 +386,33 @@ def _fit_logistic(
     return model
 
 
+def _time_split_indices(
+    dates: np.ndarray, train_ratio: float, embargo: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """按“日历日期”做全局时序切分，返回 (排序序, 训练掩码, 验证掩码)。
+
+    多股票汇聚样本按股票堆叠时，行位置 ≠ 时间先后，直接按位置切会退化成“按股票
+    切分”（train/valid 时间段重叠 → 泄露 → 验证准确率虚高）。这里改为：把所有样本
+    按真实日期排序，取 train_ratio 分位处的日期为切点，切点之后为验证段；训练段再
+    往前挖掉 embargo 个交易日，隔断“未来 N 日标签”跨越切点造成的重叠。
+    """
+    d = pd.to_datetime(pd.Series(dates), errors="coerce").to_numpy()
+    order = np.argsort(d, kind="stable")
+    d_sorted = d[order]
+    uniq = np.unique(d_sorted[~pd.isna(d_sorted)])
+    if len(uniq) < 2:
+        # 无法按日期切分：退回“全部训练、无验证”
+        keep = ~pd.isna(d_sorted)
+        return order, keep, np.zeros(len(d_sorted), dtype=bool)
+    cut_i = min(max(int(len(uniq) * train_ratio), 1), len(uniq) - 1)
+    cutoff = uniq[cut_i]  # 第一个验证日
+    emb_i = max(cut_i - int(max(0, embargo)), 0)
+    train_hi = uniq[emb_i]  # 训练日期须严格早于此，隔出 embargo 缓冲带
+    train_mask = d_sorted < train_hi
+    valid_mask = d_sorted >= cutoff
+    return order, train_mask, valid_mask
+
+
 def train_model(
     X: np.ndarray,
     y: np.ndarray,
@@ -397,30 +424,44 @@ def train_model(
     embargo: int = 0,
     class_weight: bool = True,
     refit_full: bool = True,
+    dates: Optional[np.ndarray] = None,
 ) -> tuple[TinyLogisticModel, Dict[str, Any]]:
     """按时间顺序切分并训练逻辑回归，返回 (上线模型, 评估指标)。
 
-    相比朴素时序切分，这里修正了三处影响真实准确率/指标可信度的问题：
+    相比朴素时序切分，这里修正了几处影响真实准确率/指标可信度的问题：
 
-    1. **purge/embargo 切分**：标签为「未来 N 日方向」按天滑动，训练集末尾 N 行的
-       未来收益会跨进验证段造成信息泄露、虚高 valid_accuracy。故在 train 与
-       valid 之间挖掉 ``embargo``(=标签前瞻天数) 行，得到诚实的样本外指标。
-    2. **全量 refit 上线**：用切分评估拿到诚实指标后，最终模型改用**全部有标签
-       样本**重新拟合（``refit_full``），确保上线模型吃到最新一段行情，而非只用
-       前 train_ratio 的老数据去预测今天。
-    3. **类别权重**：见 :func:`_fit_logistic`，纠正正/负样本不平衡的方向偏移。
+    1. **全局时序切分（dates）**：当传入与 X 行对齐的 ``dates`` 时，按真实日历日期
+       切分 train/valid（而非按行位置）。这对“多股票汇聚样本”至关重要——不传 dates
+       时行位置=按股票堆叠，位置切分会退化成按股票切、时间段重叠而泄露，验证准确率
+       虚高。传 dates 后得到诚实的“用过去预测未来”样本外指标。
+    2. **purge/embargo 切分**：标签为「未来 N 日方向」按天滑动，切点附近的样本未来
+       收益会跨进验证段造成泄露。故在 train 与 valid 之间挖掉 ``embargo``(=标签前瞻
+       天数) 个交易日（有 dates 按日期挖，无 dates 按行挖）。
+    3. **全量 refit 上线**：用切分评估拿到诚实指标后，最终模型改用**全部有标签
+       样本**重新拟合（``refit_full``），确保上线模型吃到最新一段行情。
+    4. **类别权重**：见 :func:`_fit_logistic`，纠正正/负样本不平衡的方向偏移。
 
     TODO(第二阶段·模型升级 LightGBM，下次续做): 若第一阶段(改标签+环境特征)
     回测后线性模型天花板明显，可在此新增 LightGBM 训练分支（需加 lightgbm 依赖，
     加依赖前先确认收益）。详见 build_features 顶部 TODO 的完整路线说明。
     """
     n = len(X)
-    n_train = max(int(n * train_ratio), 1)
     embargo = int(max(0, embargo))
-    valid_start = min(n_train + embargo, n)  # 挖掉 embargo 行，隔断标签重叠
 
-    X_train, y_train = X[:n_train], y[:n_train]
-    X_valid, y_valid = X[valid_start:], y[valid_start:]
+    if dates is not None and len(dates) == n and n > 0:
+        # —— 全局时序切分（按日历日期）——
+        order, train_mask, valid_mask = _time_split_indices(
+            np.asarray(dates), train_ratio, embargo,
+        )
+        X_ord, y_ord = X[order], y[order]
+        X_train, y_train = X_ord[train_mask], y_ord[train_mask]
+        X_valid, y_valid = X_ord[valid_mask], y_ord[valid_mask]
+    else:
+        # —— 按行位置切分（单票时序，行本就按日期升序）——
+        n_train = max(int(n * train_ratio), 1)
+        valid_start = min(n_train + embargo, n)  # 挖掉 embargo 行，隔断标签重叠
+        X_train, y_train = X[:n_train], y[:n_train]
+        X_valid, y_valid = X[valid_start:], y[valid_start:]
 
     # 评估用模型：仅在训练段拟合，验证段完全样本外（诚实估计泛化能力）
     eval_model = _fit_logistic(
