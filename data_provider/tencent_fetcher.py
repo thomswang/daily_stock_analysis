@@ -84,6 +84,15 @@ class TencentFetcher(BaseFetcher):
                 end_date,
             )
             return _empty_daily_frame()
+
+        # 腾讯历史 K 线本身不含换手率，但同一响应的 qt 实时快照带「流通股本」，
+        # 可直接算换手率(%) = 成交量 ÷ 流通股本 × 100，无需额外请求。
+        # 注意：qt 是当前快照，历史各日均用「当前流通股本」，对期间发生股本
+        # 变动（解禁/增发/回购）的票会有小偏差；需逐日精确值时由换手率回填(新浪)覆盖。
+        circ_shares = _extract_circulating_shares(payload, symbol)
+        if circ_shares and circ_shares > 0:
+            vol = pd.to_numeric(df["volume"], errors="coerce")
+            df = df.assign(turnover_rate=vol / circ_shares * 100)
         return df
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -100,7 +109,7 @@ class TencentFetcher(BaseFetcher):
         normalized["amplitude"] = (normalized["high"] - normalized["low"]) / prev_close * 100
         keep = [
             "date", "open", "high", "low", "close", "volume", "amount", "pct_chg",
-            "change_amount", "amplitude",
+            "change_amount", "amplitude", "turnover_rate",
         ]
         normalized = normalized[[c for c in keep if c in normalized.columns]]
         return normalized
@@ -186,6 +195,47 @@ def _lots_to_shares(volume: Any) -> Any:
         return float(volume) * 100
     except (TypeError, ValueError):
         return volume
+
+
+def _extract_circulating_shares(payload: dict[str, Any], symbol: str) -> Optional[float]:
+    """从 fqkline 响应内置的 qt 实时快照解析「当前流通股本」（单位：股）。
+
+    腾讯无官方文档，社区对 qt 下标 44/45 存在争议（流通市值 vs 总市值）。这里做多重
+    稳健处理：
+      1) 流通市值 ≤ 总市值，故取 min(f44,f45)×1e8 ÷ 现价，天然避开 44/45 顺序歧义；
+      2) 退回直接的流通股本字段（下标 76/72）；
+      3) 再退回用官方换手率(f38)反推：流通股本 = 今日成交量(股) ÷ (换手率/100)。
+
+    注意：qt 为「当前」快照，历史各日均沿用当前流通股本；对期间发生股本变动
+    （解禁/增发/回购）的票，历史换手率会有偏差，需逐日精确值时由新浪回填覆盖。
+    """
+    try:
+        qt = payload["data"][symbol]["qt"][symbol]
+    except (KeyError, TypeError, IndexError):
+        return None
+
+    def _f(idx: int) -> Optional[float]:
+        try:
+            return float(qt[idx])
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    price = _f(3)
+    # 1) min(流通市值, 总市值) / 现价 —— 流通市值必 ≤ 总市值，取小者即流通市值
+    mv_candidates = [v for v in (_f(44), _f(45)) if v and v > 0]
+    if price and price > 0 and mv_candidates:
+        return min(mv_candidates) * 1e8 / price
+    # 2) 直接的流通股本字段
+    for idx in (76, 72):
+        shares = _f(idx)
+        if shares and shares > 0:
+            return shares
+    # 3) 官方换手率反推（f6=今日成交量(手)，×100 转股；f38=换手率%）
+    vol_lots = _f(6)
+    turnover_pct = _f(38)
+    if vol_lots and vol_lots > 0 and turnover_pct and turnover_pct > 0:
+        return vol_lots * 100 / (turnover_pct / 100)
+    return None
 
 
 def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[str, Any]]:
