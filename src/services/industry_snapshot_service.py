@@ -23,15 +23,42 @@ canonical 带后缀格式（如 600519 -> 600519.SH）后落库。
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 class IndustrySnapshotError(Exception):
     """行业快照流程可预期的业务错误（数据源不可用等）。"""
+
+
+def _canonical_bs(code: str) -> Optional[str]:
+    """baostock 代码 'sh.600000'/'sz.000001' -> 与 stock_daily 对齐的 '600000.SH'。"""
+    raw = (code or "").strip().lower()
+    if "." not in raw:
+        return None
+    ex, num = raw.split(".", 1)
+    num = num.strip()
+    ex_map = {"sh": "SH", "sz": "SZ", "bj": "BJ"}
+    suffix = ex_map.get(ex)
+    if not suffix or not num.isdigit():
+        return None
+    return f"{num}.{suffix}"
+
+
+def _split_industry(text: str) -> Tuple[Optional[str], str]:
+    """证监会行业串 'J66货币金融服务' -> (industry_code='J66', name='货币金融服务')。
+
+    无法识别前缀码时返回 (None, 原串)。
+    """
+    s = (text or "").strip()
+    m = re.match(r"^([A-Z]\d*)\s*(.*)$", s)
+    if m and m.group(2):
+        return m.group(1), m.group(2).strip()
+    return None, s
 
 
 def _canonical(code: str) -> Optional[str]:
@@ -76,6 +103,48 @@ class IndustrySnapshotService:
 
             self._repo = StockIndustryRepository()
         return self._repo
+
+    def build_mapping_baostock(self) -> Dict[str, Dict[str, Any]]:
+        """用 baostock query_stock_industry 构建「canonical code -> {industry, industry_code}」。
+
+        baostock 用证监会行业分类（门类如 J66 货币金融服务），免费稳定、一次请求拉全市场，
+        比东财逐板块请求可靠得多，作为首选源。行业为空的票跳过。
+        """
+        try:
+            import baostock as bs
+        except ImportError as exc:  # noqa: BLE001
+            raise IndustrySnapshotError("未安装 baostock（pip install baostock）") from exc
+
+        lg = bs.login()
+        if getattr(lg, "error_code", "1") != "0":
+            raise IndustrySnapshotError(f"baostock 登录失败：{getattr(lg, 'error_msg', '未知')}")
+        try:
+            rs = bs.query_stock_industry()
+            if getattr(rs, "error_code", "1") != "0":
+                raise IndustrySnapshotError(f"baostock 行业查询失败：{getattr(rs, 'error_msg', '未知')}")
+            mapping: Dict[str, Dict[str, Any]] = {}
+            # 字段顺序: updateDate, code, code_name, industry, industryClassification
+            while rs.error_code == "0" and rs.next():
+                row = rs.get_row_data()
+                if len(row) < 4:
+                    continue
+                canon = _canonical_bs(row[1])
+                industry = (row[3] or "").strip()
+                if not canon or not industry:
+                    continue
+                ind_code, ind_name = _split_industry(industry)
+                if canon not in mapping:
+                    mapping[canon] = {"industry": ind_name or industry, "industry_code": ind_code}
+        finally:
+            try:
+                bs.logout()
+            except Exception:  # noqa: BLE001
+                pass
+
+        if not mapping:
+            raise IndustrySnapshotError("baostock 未返回任何有效行业归属")
+        logger.info("baostock 行业映射构建完成：%d 只股票", len(mapping))
+        return mapping
 
     def build_mapping(self, *, sleep: float = 0.3, limit_boards: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
         """拉取全部行业板块成分股，构建「canonical code -> {industry, industry_code}」。"""
@@ -145,21 +214,52 @@ class IndustrySnapshotService:
         self,
         *,
         as_of: Optional[date] = None,
-        source: str = "akshare_em",
+        source: str = "auto",
         sleep: float = 0.3,
         limit_boards: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """构建并落库一次行业快照，返回摘要。"""
+        """构建并落库一次行业快照，返回摘要。
+
+        source:
+        - "auto"（默认）：先试 baostock（稳定、一次拉全市场），失败再退回东财板块。
+        - "baostock" / "akshare_em"：只用指定源。
+        """
         as_of = as_of or date.today()
-        mapping = self.build_mapping(sleep=sleep, limit_boards=limit_boards)
-        written = self.repo.save_snapshot(mapping, as_of_date=as_of, source=source)
+
+        order = []
+        if source in ("auto", "baostock"):
+            order.append("baostock")
+        if source in ("auto", "akshare_em"):
+            order.append("akshare_em")
+        if not order:
+            raise IndustrySnapshotError(f"未知行业数据源：{source}")
+
+        mapping: Optional[Dict[str, Dict[str, Any]]] = None
+        used_source: Optional[str] = None
+        errors = []
+        for src in order:
+            try:
+                if src == "baostock":
+                    mapping = self.build_mapping_baostock()
+                else:
+                    mapping = self.build_mapping(sleep=sleep, limit_boards=limit_boards)
+                used_source = src
+                break
+            except Exception as exc:  # noqa: BLE001 - 尝试下一个源
+                errors.append(f"{src}: {exc}")
+                logger.warning("行业源 %s 不可用，尝试下一个：%s", src, exc)
+
+        if not mapping or used_source is None:
+            raise IndustrySnapshotError("所有行业数据源均失败：" + " | ".join(errors))
+
+        written = self.repo.save_snapshot(mapping, as_of_date=as_of, source=used_source)
         industries = len({v["industry"] for v in mapping.values()})
         summary = {
             "as_of_date": as_of.isoformat(),
             "codes": len(mapping),
             "industries": industries,
             "written": written,
-            "source": source,
+            "source": used_source,
         }
         logger.info("行业快照完成：%s 覆盖 %d 只 / %d 个行业，写入 %d 条",
                     summary["as_of_date"], summary["codes"], summary["industries"], written)

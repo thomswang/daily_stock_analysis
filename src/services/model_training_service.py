@@ -47,6 +47,8 @@ from src.services.prediction_service import (
 
 # 横截面排序：一个交易日至少要有这么多只股票，排名分强弱才有意义
 MIN_NAMES_PER_DAY = 20
+# 行业中性化：同日同行业内至少这么多只票，行业内排名才有意义
+MIN_NAMES_PER_INDUSTRY_DAY = 5
 
 logger = logging.getLogger(__name__)
 
@@ -92,9 +94,22 @@ class ModelTrainingService:
         """
         is_xsec = label_mode == "cross_section"
         market_df = load_market_df() if label_mode == "relative" else None
+        # 横截面：加载行业归属做「行业中性」排名（同日同行业内比强弱）。
+        ind_map: Dict[str, str] = {}
+        if is_xsec:
+            try:
+                from src.repositories.stock_industry_repo import StockIndustryRepository
+                ind_map = StockIndustryRepository().get_map()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[train] 行业映射加载失败，横截面退回全市场排名：%s", exc)
+            logger.info(
+                "[train] 横截面口径：%s（行业映射覆盖 %d 只）",
+                "行业中性排名" if ind_map else "全市场排名（无行业数据）", len(ind_map),
+            )
         X_parts: List[np.ndarray] = []
         y_parts: List[np.ndarray] = []       # absolute/relative：直接是 0/1 标签
         fwd_parts: List[np.ndarray] = []     # cross_section：连续远期收益，稍后横向排名
+        ind_parts: List[str] = []            # cross_section：每行的行业（行业中性排名用）
         used_symbols: List[str] = []
         all_dates: List[Any] = []
 
@@ -139,6 +154,8 @@ class ModelTrainingService:
                 if len(v_i) == 0:
                     continue
                 fwd_parts.append(v_i)
+                ind = ind_map.get((code or "").strip().upper(), "__UNK__") if ind_map else "__ALL__"
+                ind_parts.extend([ind] * len(v_i))
             else:
                 # 未来 horizon 日 0/1 标签；末 horizon 行无标签，剔除
                 if label_mode == "relative":
@@ -171,21 +188,29 @@ class ModelTrainingService:
         X = np.vstack(X_parts)
 
         if is_xsec:
-            # ── 横截面排名：同一交易日内按远期收益排名，前 50% 记 1 ──
+            # ── 横截面排名：按远期收益在「同日(同行业)」内排名，前 50% 记 1 ──
             fwd = np.concatenate(fwd_parts)
             dser = pd.to_datetime(pd.Series(all_dates), errors="coerce")
-            frame = pd.DataFrame({"d": dser.values, "fwd": fwd})
-            grp = frame.groupby("d")["fwd"]
-            pct = grp.rank(pct=True, method="average").to_numpy()   # 当日分位 (0,1]
-            cnt = grp.transform("count").to_numpy()                 # 当日样本数
+            frame = pd.DataFrame({"d": dser.values, "ind": ind_parts, "fwd": fwd})
+            neutralized = bool(ind_map)
+            if neutralized:
+                # 行业中性：同日同行业内排名；剔除该(日,行业)组票数过少者
+                grp = frame.groupby(["d", "ind"])["fwd"]
+                min_cnt = MIN_NAMES_PER_INDUSTRY_DAY
+            else:
+                grp = frame.groupby("d")["fwd"]
+                min_cnt = MIN_NAMES_PER_DAY
+            pct = grp.rank(pct=True, method="average").to_numpy()   # 组内分位 (0,1]
+            cnt = grp.transform("count").to_numpy()                 # 组内样本数
             y = (pct > 0.5).astype(float)
-            keep = cnt >= MIN_NAMES_PER_DAY                         # 剔除票数过少的日
+            keep = cnt >= min_cnt
             if not keep.all():
                 X, y = X[keep], y[keep]
                 all_dates = [d for d, k in zip(all_dates, keep) if k]
             logger.info(
-                "[train] 横截面标签：保留 %d 条（剔除票数<%d 的交易日），正样本占比 %.1f%%",
-                len(y), MIN_NAMES_PER_DAY, 100.0 * float(y.mean()) if len(y) else 0.0,
+                "[train] 横截面标签(%s)：保留 %d 条，正样本占比 %.1f%%",
+                "行业中性" if neutralized else "全市场",
+                len(y), 100.0 * float(y.mean()) if len(y) else 0.0,
             )
             return X, y, used_symbols, all_dates
 
