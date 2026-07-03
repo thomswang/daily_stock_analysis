@@ -138,6 +138,7 @@ def _run_training(args: argparse.Namespace) -> dict:
         notes=args.notes,
         label_mode=args.label_mode,
         algorithm=args.algorithm,
+        train_end=args.train_end,
     )
     _print_summary(summary)
     return summary
@@ -198,6 +199,8 @@ def parse_args() -> argparse.Namespace:
                              "cross_section=当日横截面强势前50%%(市场中性/纯选股)")
     parser.add_argument("--algorithm", type=str, default="logistic", choices=["logistic", "lightgbm"],
                         help="模型：logistic=逻辑回归(默认)；lightgbm=梯度提升树(学非线性/交互)")
+    parser.add_argument("--train-end", type=str, default=None, metavar="YYYY-MM-DD",
+                        help="训练截止日：只用该日期之前的样本训练（留出近期做样本外回测）")
     parser.add_argument("--no-active", action="store_true", help="训练后不设为激活版本")
     parser.add_argument("--no-refresh", action="store_true", help="不联网，仅用本地缓存数据训练")
     parser.add_argument("--notes", type=str, default=None, help="模型备注")

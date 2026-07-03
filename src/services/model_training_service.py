@@ -77,6 +77,7 @@ class ModelTrainingService:
         horizon: int = DEFAULT_LABEL_HORIZON,
         threshold: float = DEFAULT_LABEL_THRESHOLD,
         label_mode: str = "absolute",
+        train_end: Optional[Any] = None,
     ) -> tuple[np.ndarray, np.ndarray, List[str], List[Any]]:
         """遍历股票，构造并汇聚 (X, y) 训练样本。
 
@@ -187,6 +188,20 @@ class ModelTrainingService:
 
         X = np.vstack(X_parts)
 
+        # ── 训练截止日：只保留 date < train_end 的样本（留出近期做样本外回测）──
+        if train_end is not None:
+            cutoff = pd.Timestamp(train_end)
+            dmask = (pd.to_datetime(pd.Series(all_dates), errors="coerce") < cutoff).to_numpy()
+            n_before = len(all_dates)
+            X = X[dmask]
+            all_dates = [d for d, k in zip(all_dates, dmask) if k]
+            if is_xsec:
+                fwd_parts = [np.concatenate(fwd_parts)[dmask]]
+                ind_parts = [v for v, k in zip(ind_parts, dmask) if k]
+            else:
+                y_parts = [np.concatenate(y_parts)[dmask]]
+            logger.info("[train] 训练截止 %s：%d → %d 条", cutoff.date(), n_before, len(all_dates))
+
         if is_xsec:
             # ── 横截面排名：按远期收益在「同日(同行业)」内排名，前 50% 记 1 ──
             fwd = np.concatenate(fwd_parts)
@@ -233,6 +248,7 @@ class ModelTrainingService:
         notes: Optional[str] = None,
         label_mode: str = "absolute",
         algorithm: str = "logistic",
+        train_end: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """执行训练并持久化，返回训练摘要。
 
@@ -271,6 +287,7 @@ class ModelTrainingService:
         X, y, used_symbols, all_dates = self._collect_samples(
             symbols, lookback_days, refresh=refresh,
             horizon=horizon, threshold=threshold, label_mode=label_mode,
+            train_end=train_end,
         )
 
         logger.info(
