@@ -100,6 +100,8 @@ def _print_summary(summary: dict) -> None:
     print("\n===== 训练完成 =====")
     print(f"模型:     {summary['model_name']} @ {summary['version']}  (id={summary['model_id']})")
     print(f"激活:     {'是' if summary['is_active'] else '否'}")
+    _lm = summary.get('label_mode', 'absolute')
+    print(f"标签口径: {'跑赢大盘(相对)' if _lm == 'relative' else '绝对涨跌'}")
     print(f"股票数:   {summary['symbol_count']}")
     print(f"总样本:   {summary['total_samples']}  (训练 {summary['train_samples']} / 验证 {summary['valid_samples']})")
     print(f"训练准确率: {_fmt_pct(summary.get('train_accuracy'))}")
@@ -131,6 +133,7 @@ def _run_training(args: argparse.Namespace) -> dict:
         set_active=not args.no_active,
         refresh=not args.no_refresh,
         notes=args.notes,
+        label_mode=args.label_mode,
     )
     _print_summary(summary)
     return summary
@@ -185,6 +188,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=0.3, help="学习率（默认 0.3）")
     parser.add_argument("--horizon", type=int, default=5, help="标签前瞻天数=预测未来N日方向（默认 5）")
     parser.add_argument("--threshold", type=float, default=0.0, help="记为看涨所需最小未来收益（默认 0=纯方向，如 0.02=需涨超2%%）")
+    parser.add_argument("--label-mode", type=str, default="absolute", choices=["absolute", "relative"],
+                        help="标签口径：absolute=绝对涨跌(默认)；relative=是否跑赢大盘(剔除大盘β,只考alpha)")
     parser.add_argument("--no-active", action="store_true", help="训练后不设为激活版本")
     parser.add_argument("--no-refresh", action="store_true", help="不联网，仅用本地缓存数据训练")
     parser.add_argument("--notes", type=str, default=None, help="模型备注")

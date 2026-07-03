@@ -35,10 +35,12 @@ from src.services.prediction_service import (
     DEFAULT_LABEL_THRESHOLD,
     FEATURE_ORDER,
     PredictionError,
+    _align_market_close,
     _load_daily_df,
     build_features,
     load_market_df,
     make_labels,
+    make_labels_relative,
     train_model,
 )
 
@@ -68,14 +70,20 @@ class ModelTrainingService:
         refresh: bool,
         horizon: int = DEFAULT_LABEL_HORIZON,
         threshold: float = DEFAULT_LABEL_THRESHOLD,
+        label_mode: str = "absolute",
     ) -> tuple[np.ndarray, np.ndarray, List[str], List[Any]]:
         """遍历股票，构造并汇聚 (X, y) 训练样本。
 
-        标签口径：未来 horizon 日方向（与预测/回测一致），末 horizon 行无标签。
+        标签口径（label_mode）：
+        - "absolute"：未来 horizon 日绝对涨跌（默认，与旧逻辑一致）
+        - "relative"：未来 horizon 日是否跑赢大盘（沪深300），剔除大盘 β、只考 alpha
+
+        末 horizon 行无标签。
 
         Returns:
             (X, y, used_symbols, all_dates)
         """
+        market_df = load_market_df() if label_mode == "relative" else None
         X_parts: List[np.ndarray] = []
         y_parts: List[np.ndarray] = []
         used_symbols: List[str] = []
@@ -107,14 +115,31 @@ class ModelTrainingService:
                 logger.info("[train] %s 有效样本过少(%d)，跳过", code, len(feats))
                 continue
 
-            # 未来 horizon 日方向标签；末 horizon 行无标签，剔除
-            y_all = make_labels(feats["close"], horizon=horizon, threshold=threshold)
+            # 未来 horizon 日标签；末 horizon 行无标签，剔除
+            if label_mode == "relative":
+                mkt_close = _align_market_close(feats["date"], market_df)
+                y_all = make_labels_relative(
+                    feats["close"], mkt_close, horizon=horizon, threshold=threshold,
+                )
+            else:
+                y_all = make_labels(feats["close"], horizon=horizon, threshold=threshold)
             usable = feats.iloc[:-horizon]
-            X_parts.append(usable[FEATURE_ORDER].to_numpy(dtype=float))
-            y_parts.append(y_all.iloc[:-horizon].to_numpy())
-            all_dates.extend(usable["date"].tolist())
+            X_i = usable[FEATURE_ORDER].to_numpy(dtype=float)
+            y_i = y_all.iloc[:-horizon].to_numpy()
+            d_i = usable["date"].tolist()
+            # 相对标签在大盘对不齐处会产生 NaN，需按行剔除（保持 X/y/date 对齐）
+            valid = ~np.isnan(y_i)
+            if not valid.all():
+                X_i, y_i = X_i[valid], y_i[valid]
+                d_i = [d for d, keep in zip(d_i, valid) if keep]
+            if len(y_i) == 0:
+                logger.info("[train] %s 无有效标签，跳过", code)
+                continue
+            X_parts.append(X_i)
+            y_parts.append(y_i)
+            all_dates.extend(d_i)
             used_symbols.append(code)
-            logger.info("[train] %s 贡献样本 %d 条", code, len(usable))
+            logger.info("[train] %s 贡献样本 %d 条", code, len(y_i))
 
         if not X_parts:
             raise ModelTrainingError(
@@ -139,6 +164,7 @@ class ModelTrainingService:
         set_active: bool = True,
         refresh: bool = True,
         notes: Optional[str] = None,
+        label_mode: str = "absolute",
     ) -> Dict[str, Any]:
         """执行训练并持久化，返回训练摘要。
 
@@ -152,6 +178,7 @@ class ModelTrainingService:
             set_active: 训练完成后是否设为激活版本（供预测使用）
             refresh: 是否联网刷新数据（False 则纯用本地缓存，适合离线补训）
             notes: 备注
+            label_mode: "absolute"=绝对涨跌（默认）；"relative"=是否跑赢大盘（剔除大盘 β）
 
         Returns:
             训练摘要字典（版本、样本数、指标等）
@@ -159,17 +186,19 @@ class ModelTrainingService:
         if not symbols:
             raise ModelTrainingError("训练股票列表为空")
 
+        label_mode = "relative" if str(label_mode).lower() == "relative" else "absolute"
         lookback_days = int(max(120, min(lookback_days, 1200)))
         horizon = int(max(1, min(horizon, 20)))
         started = datetime.now()
         logger.info(
-            "[train] 开始训练：模型=%s，股票=%d 只，回溯=%d 天，标签=未来%d日，联网刷新=%s",
-            model_name, len(symbols), lookback_days, horizon, refresh,
+            "[train] 开始训练：模型=%s，股票=%d 只，回溯=%d 天，标签=未来%d日(%s)，联网刷新=%s",
+            model_name, len(symbols), lookback_days, horizon,
+            "跑赢大盘" if label_mode == "relative" else "绝对涨跌", refresh,
         )
 
         X, y, used_symbols, all_dates = self._collect_samples(
             symbols, lookback_days, refresh=refresh,
-            horizon=horizon, threshold=threshold,
+            horizon=horizon, threshold=threshold, label_mode=label_mode,
         )
 
         logger.info(
@@ -190,6 +219,11 @@ class ModelTrainingService:
         _norm_dates = [d for d in (_as_date(x) for x in all_dates) if d is not None]
         start_date = min(_norm_dates) if _norm_dates else None
         end_date = max(_norm_dates) if _norm_dates else None
+
+        # 把标签口径写进 notes（相对模型的 up_probability 语义是“跑赢大盘概率”，
+        # 供预测/展示层区分绝对涨跌 vs 相对超额）。
+        _mode_tag = f"label_mode={label_mode}"
+        notes = f"{_mode_tag}; {notes}" if notes else _mode_tag
 
         model_id = self.repo.save_model(
             name=model_name,
@@ -212,6 +246,7 @@ class ModelTrainingService:
             "model_name": model_name,
             "version": version,
             "is_active": set_active,
+            "label_mode": label_mode,
             "symbol_count": len(used_symbols),
             "trained_symbols": used_symbols,
             "total_samples": int(len(X)),

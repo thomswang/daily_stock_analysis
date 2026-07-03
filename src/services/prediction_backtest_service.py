@@ -61,6 +61,7 @@ class PredictionBacktestService:
         refresh: bool = True,
         use_global_model: bool = False,
         model_name: str = "trend_lr",
+        label_mode: str = "absolute",
     ) -> Dict[str, Any]:
         if not symbol or not symbol.strip():
             raise PredictionError("股票代码不能为空")
@@ -71,6 +72,8 @@ class PredictionBacktestService:
         retrain_every = int(max(1, min(retrain_every, 60)))
         min_train = int(max(30, min(min_train, 500)))
         threshold = float(min(max(threshold, 0.05), 0.95))
+        # relative：检验"是否跑赢大盘"(剔除大盘β)；absolute：绝对涨跌
+        label_mode = "relative" if str(label_mode).lower() == "relative" else "absolute"
 
         # use_global_model=True：直接用当前“激活的全局模型”逐日打分（不重训），
         # 让回测检验的正是线上 predict_stock 真正使用的模型；否则退回“单票滚动重训”。
@@ -99,10 +102,33 @@ class PredictionBacktestService:
         X_all = feats[FEATURE_ORDER].to_numpy(dtype=float)
         date_strs = pd.to_datetime(feats["date"]).dt.strftime("%Y-%m-%d").tolist()
 
-        # 标签：未来 horizon 天是否上涨（严格用于自洽的方向检验）
+        # 相对口径需要大盘收盘价对齐（沪深300）；absolute 则整段置 NaN 不参与
+        if label_mode == "relative":
+            mkt_close = _align_market_close(
+                feats["date"], load_market_df()
+            ).to_numpy(dtype=float)
+            if np.isnan(mkt_close).all():
+                raise PredictionError(
+                    "relative 模式需要大盘指数数据但未加载到；请先跑 backfill_index.py 回填沪深300"
+                )
+        else:
+            mkt_close = np.full(n, np.nan, dtype=float)
+
+        def _fwd_target(idx: int) -> float:
+            """第 idx 个评估点的"目标收益"：absolute=个股收益；relative=超额收益(个股−大盘)。"""
+            stock_ret = close[idx + horizon] / close[idx] - 1.0
+            if label_mode == "relative":
+                mc0, mc1 = mkt_close[idx], mkt_close[idx + horizon]
+                if np.isnan(mc0) or np.isnan(mc1) or mc0 <= 0:
+                    return float("nan")
+                return stock_ret - (mc1 / mc0 - 1.0)
+            return stock_ret
+
+        # 标签：absolute=未来 H 日上涨；relative=未来 H 日跑赢大盘。严格自洽方向检验
         labels = np.zeros(n, dtype=int)
         for j in range(n - horizon):
-            labels[j] = 1 if close[j + horizon] > close[j] else 0
+            tgt = _fwd_target(j)
+            labels[j] = 1 if (np.isfinite(tgt) and tgt > 0) else 0
 
         model = None
         last_train_at = -(10**9)
@@ -144,7 +170,11 @@ class PredictionBacktestService:
             prob_by_index[i] = up_prob
             direction = "up" if up_prob >= threshold else "down"
 
-            actual_ret = close[i + horizon] / close[i] - 1.0
+            # relative 模式：actual_ret 为超额收益(个股−大盘)，direction="up"=预测跑赢
+            actual_ret = _fwd_target(i)
+            if not np.isfinite(actual_ret):
+                prob_by_index.pop(i, None)
+                continue
             actual_up = actual_ret > 0
             correct = (direction == "up") == bool(actual_up)
 
@@ -188,6 +218,8 @@ class PredictionBacktestService:
             end_date=end_date,
             first_eval=first_eval,
             n=n,
+            fwd_target=_fwd_target,
+            label_mode=label_mode,
         )
 
         return {
@@ -199,6 +231,7 @@ class PredictionBacktestService:
             "threshold": round(threshold, 4),
             "allow_short": allow_short,
             "model_mode": "global" if global_model is not None else "per_stock",
+            "label_mode": label_mode,
             "start_date": points[0]["date"],
             "end_date": points[-1]["date"],
             "n_predictions": n_pred,
@@ -234,8 +267,15 @@ class PredictionBacktestService:
         end_date: Optional[str],
         first_eval: int,
         n: int,
+        fwd_target=None,
+        label_mode: str = "absolute",
     ) -> Dict[str, Any]:
-        """按非重叠(每 horizon 天一笔)交易构造资金曲线，避免持仓重叠导致收益虚高。"""
+        """按非重叠(每 horizon 天一笔)交易构造资金曲线，避免持仓重叠导致收益虚高。
+
+        - absolute：每笔收益=个股收益；benchmark=买入持有。
+        - relative：每笔收益=超额收益(个股−大盘，等价 long 个股/short 指数的市场中性)；
+          benchmark=始终持有该组合(always 跑赢下注)，用于衡量“择时超额”是否胜过“一直持有超额”。
+        """
         eq_strat = 1.0
         eq_bench = 1.0
         curve: List[Dict[str, Any]] = []
@@ -258,7 +298,12 @@ class PredictionBacktestService:
                 idx += 1
                 continue
 
-            ret = close[idx + horizon] / close[idx] - 1.0
+            ret = fwd_target(idx) if fwd_target is not None else (
+                close[idx + horizon] / close[idx] - 1.0
+            )
+            if not np.isfinite(ret):
+                idx += 1
+                continue
             if prob >= threshold:
                 signal = 1
             elif allow_short:

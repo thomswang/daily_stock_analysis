@@ -57,14 +57,18 @@ def _print_report(r: dict) -> None:
     print("\n===== 预测回测报告 =====")
     print(f"标的:       {r['stock_code']}  {r.get('stock_name') or ''}")
     _mode = r.get("model_mode", "per_stock")
+    _lm = r.get("label_mode", "absolute")
     print(f"模型模式:   {'全局模型(样本内)' if _mode == 'global' else '单票滚动重训(样本外)'}")
+    print(f"检验口径:   {'跑赢大盘(相对/市场中性)' if _lm == 'relative' else '绝对涨跌'}")
     print(f"评估区间:   {r['start_date']} ~ {r['end_date']}")
     print(f"参数:       horizon={r['horizon_days']}  lookback={r['lookback_days']}  "
           f"retrain_every={r['retrain_every']}  threshold={r['threshold']}  allow_short={r['allow_short']}")
     print("-" * 40)
+    _rel = r.get("label_mode") == "relative"
+    _up_word = "跑赢" if _rel else "上涨"
     print(f"逐日预测数: {r['n_predictions']}  (命中 {r['correct']})")
     print(f"方向命中率: {_fmt_pct(r['accuracy'])}   基线(猜多数): {_fmt_pct(r['baseline_accuracy'])}")
-    print(f"看涨精确率: {_fmt_pct(r['up_precision'])}   实际上涨占比: {_fmt_pct(r['actual_up_ratio'])}")
+    print(f"{_up_word}精确率: {_fmt_pct(r['up_precision'])}   实际{_up_word}占比: {_fmt_pct(r['actual_up_ratio'])}")
     print("-" * 40)
     print(f"非重叠交易: {r['n_trades']} 笔   胜率: {_fmt_pct(r['win_rate'])}")
     print(f"策略收益:   {r['strategy_return_pct']}%   买入持有: {r['benchmark_return_pct']}%")
@@ -94,6 +98,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--global-model", action="store_true",
                    help="用当前激活的全局模型逐日打分(检验线上模型;样本内偏乐观),否则单票滚动重训")
     p.add_argument("--model-name", type=str, default="trend_lr", help="全局模型名(默认 trend_lr)")
+    p.add_argument("--label-mode", type=str, default="absolute", choices=["absolute", "relative"],
+                   help="检验口径：absolute=绝对涨跌(默认)；relative=是否跑赢大盘(超额收益,市场中性)")
     p.add_argument("--debug", action="store_true", help="调试日志")
     return p.parse_args()
 
@@ -124,6 +130,7 @@ def main() -> int:
             refresh=not args.no_refresh,
             use_global_model=args.global_model,
             model_name=args.model_name,
+            label_mode=args.label_mode,
         )
     except PredictionError as exc:
         raise SystemExit(f"回测失败：{exc}")

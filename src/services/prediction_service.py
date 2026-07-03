@@ -119,6 +119,42 @@ def make_labels(
     return labels
 
 
+def make_labels_relative(
+    close: pd.Series,
+    market_close: pd.Series,
+    horizon: int = DEFAULT_LABEL_HORIZON,
+    threshold: float = DEFAULT_LABEL_THRESHOLD,
+) -> pd.Series:
+    """构造"未来 horizon 日是否跑赢大盘"标签（相对收益，剔除大盘 β）。
+
+        个股未来收益 = close[t+h]/close[t] − 1
+        大盘未来收益 = market_close[t+h]/market_close[t] − 1
+        label = 1 if (个股未来收益 − 大盘未来收益) > threshold else 0
+
+    相比"绝对涨跌"标签，相对收益标签只考"选股能力(alpha)"：跌市里所有票都跌，
+    但预测"哪只跌得比大盘少"依然有意义，因此不会像绝对标签那样在下跌市系统性失效。
+    market_close 须已按个股交易日对齐（等长、同索引）；对不齐处为 NaN → 标签 NaN。
+
+    Args:
+        close: 个股收盘价（按日期升序）
+        market_close: 与 close 等长、按同一交易日对齐的大盘指数收盘价
+        horizon: 前瞻交易日数（>=1）
+        threshold: 记为"跑赢"所需的最小超额收益（0=只要跑赢即可）
+
+    Returns:
+        与 close 等长的 float Series；无法计算处为 NaN。
+    """
+    horizon = int(max(1, horizon))
+    stock_fwd = close.shift(-horizon) / close - 1.0
+    mkt = pd.to_numeric(pd.Series(np.asarray(market_close, dtype=float)), errors="coerce")
+    mkt.index = close.index
+    mkt_fwd = mkt.shift(-horizon) / mkt - 1.0
+    excess = stock_fwd - mkt_fwd
+    labels = (excess > threshold).astype(float)
+    labels[excess.isna()] = np.nan  # 个股或大盘未来收益缺失 → 不可用于训练
+    return labels
+
+
 class PredictionError(Exception):
     """预测流程可预期的业务错误（数据不足等），端点转 400。"""
 
