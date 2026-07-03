@@ -102,7 +102,8 @@ def _print_summary(summary: dict) -> None:
     print(f"激活:     {'是' if summary['is_active'] else '否'}")
     _lm = summary.get('label_mode', 'absolute')
     _algo = summary.get('algorithm', 'logistic_regression_gd')
-    print(f"标签口径: {'跑赢大盘(相对)' if _lm == 'relative' else '绝对涨跌'}")
+    _lm_txt = {'relative': '跑赢大盘(相对)', 'cross_section': '横截面强势前50%(市场中性)'}.get(_lm, '绝对涨跌')
+    print(f"标签口径: {_lm_txt}")
     print(f"算法:     {'LightGBM(梯度提升树)' if _algo == 'lightgbm_gbdt' else '逻辑回归'}")
     print(f"股票数:   {summary['symbol_count']}")
     print(f"总样本:   {summary['total_samples']}  (训练 {summary['train_samples']} / 验证 {summary['valid_samples']})")
@@ -191,8 +192,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=0.3, help="学习率（默认 0.3）")
     parser.add_argument("--horizon", type=int, default=5, help="标签前瞻天数=预测未来N日方向（默认 5）")
     parser.add_argument("--threshold", type=float, default=0.0, help="记为看涨所需最小未来收益（默认 0=纯方向，如 0.02=需涨超2%%）")
-    parser.add_argument("--label-mode", type=str, default="absolute", choices=["absolute", "relative"],
-                        help="标签口径：absolute=绝对涨跌(默认)；relative=是否跑赢大盘(剔除大盘β,只考alpha)")
+    parser.add_argument("--label-mode", type=str, default="absolute",
+                        choices=["absolute", "relative", "cross_section"],
+                        help="标签口径：absolute=绝对涨跌(默认)；relative=是否跑赢大盘；"
+                             "cross_section=当日横截面强势前50%%(市场中性/纯选股)")
     parser.add_argument("--algorithm", type=str, default="logistic", choices=["logistic", "lightgbm"],
                         help="模型：logistic=逻辑回归(默认)；lightgbm=梯度提升树(学非线性/交互)")
     parser.add_argument("--no-active", action="store_true", help="训练后不设为激活版本")

@@ -39,10 +39,14 @@ from src.services.prediction_service import (
     _load_daily_df,
     build_features,
     load_market_df,
+    make_forward_return,
     make_labels,
     make_labels_relative,
     train_model,
 )
+
+# 横截面排序：一个交易日至少要有这么多只股票，排名分强弱才有意义
+MIN_NAMES_PER_DAY = 20
 
 logger = logging.getLogger(__name__)
 
@@ -77,15 +81,20 @@ class ModelTrainingService:
         标签口径（label_mode）：
         - "absolute"：未来 horizon 日绝对涨跌（默认，与旧逻辑一致）
         - "relative"：未来 horizon 日是否跑赢大盘（沪深300），剔除大盘 β、只考 alpha
+        - "cross_section"：未来 horizon 日在**当日全市场横截面**里是否属强势前 50%
+          （先收集连续远期收益，汇聚后按交易日横向排名分强弱；天然市场中性、
+          类别均衡，基线恒 ~50%，超过即为纯选股能力）
 
         末 horizon 行无标签。
 
         Returns:
             (X, y, used_symbols, all_dates)
         """
+        is_xsec = label_mode == "cross_section"
         market_df = load_market_df() if label_mode == "relative" else None
         X_parts: List[np.ndarray] = []
-        y_parts: List[np.ndarray] = []
+        y_parts: List[np.ndarray] = []       # absolute/relative：直接是 0/1 标签
+        fwd_parts: List[np.ndarray] = []     # cross_section：连续远期收益，稍后横向排名
         used_symbols: List[str] = []
         all_dates: List[Any] = []
 
@@ -115,31 +124,44 @@ class ModelTrainingService:
                 logger.info("[train] %s 有效样本过少(%d)，跳过", code, len(feats))
                 continue
 
-            # 未来 horizon 日标签；末 horizon 行无标签，剔除
-            if label_mode == "relative":
-                mkt_close = _align_market_close(feats["date"], market_df)
-                y_all = make_labels_relative(
-                    feats["close"], mkt_close, horizon=horizon, threshold=threshold,
-                )
-            else:
-                y_all = make_labels(feats["close"], horizon=horizon, threshold=threshold)
             usable = feats.iloc[:-horizon]
             X_i = usable[FEATURE_ORDER].to_numpy(dtype=float)
-            y_i = y_all.iloc[:-horizon].to_numpy()
             d_i = usable["date"].tolist()
-            # 相对标签在大盘对不齐处会产生 NaN，需按行剔除（保持 X/y/date 对齐）
-            valid = ~np.isnan(y_i)
-            if not valid.all():
-                X_i, y_i = X_i[valid], y_i[valid]
-                d_i = [d for d, keep in zip(d_i, valid) if keep]
-            if len(y_i) == 0:
-                logger.info("[train] %s 无有效标签，跳过", code)
-                continue
+
+            if is_xsec:
+                # 连续远期收益，末 horizon 行剔除；NaN 行按行剔除
+                fwd_all = make_forward_return(feats["close"], horizon=horizon)
+                v_i = fwd_all.iloc[:-horizon].to_numpy()
+                valid = ~np.isnan(v_i)
+                if not valid.all():
+                    X_i, v_i = X_i[valid], v_i[valid]
+                    d_i = [d for d, keep in zip(d_i, valid) if keep]
+                if len(v_i) == 0:
+                    continue
+                fwd_parts.append(v_i)
+            else:
+                # 未来 horizon 日 0/1 标签；末 horizon 行无标签，剔除
+                if label_mode == "relative":
+                    mkt_close = _align_market_close(feats["date"], market_df)
+                    y_all = make_labels_relative(
+                        feats["close"], mkt_close, horizon=horizon, threshold=threshold,
+                    )
+                else:
+                    y_all = make_labels(feats["close"], horizon=horizon, threshold=threshold)
+                y_i = y_all.iloc[:-horizon].to_numpy()
+                # 相对标签在大盘对不齐处会产生 NaN，需按行剔除（保持 X/y/date 对齐）
+                valid = ~np.isnan(y_i)
+                if not valid.all():
+                    X_i, y_i = X_i[valid], y_i[valid]
+                    d_i = [d for d, keep in zip(d_i, valid) if keep]
+                if len(y_i) == 0:
+                    logger.info("[train] %s 无有效标签，跳过", code)
+                    continue
+                y_parts.append(y_i)
+
             X_parts.append(X_i)
-            y_parts.append(y_i)
             all_dates.extend(d_i)
             used_symbols.append(code)
-            logger.info("[train] %s 贡献样本 %d 条", code, len(y_i))
 
         if not X_parts:
             raise ModelTrainingError(
@@ -147,6 +169,26 @@ class ModelTrainingService:
             )
 
         X = np.vstack(X_parts)
+
+        if is_xsec:
+            # ── 横截面排名：同一交易日内按远期收益排名，前 50% 记 1 ──
+            fwd = np.concatenate(fwd_parts)
+            dser = pd.to_datetime(pd.Series(all_dates), errors="coerce")
+            frame = pd.DataFrame({"d": dser.values, "fwd": fwd})
+            grp = frame.groupby("d")["fwd"]
+            pct = grp.rank(pct=True, method="average").to_numpy()   # 当日分位 (0,1]
+            cnt = grp.transform("count").to_numpy()                 # 当日样本数
+            y = (pct > 0.5).astype(float)
+            keep = cnt >= MIN_NAMES_PER_DAY                         # 剔除票数过少的日
+            if not keep.all():
+                X, y = X[keep], y[keep]
+                all_dates = [d for d, k in zip(all_dates, keep) if k]
+            logger.info(
+                "[train] 横截面标签：保留 %d 条（剔除票数<%d 的交易日），正样本占比 %.1f%%",
+                len(y), MIN_NAMES_PER_DAY, 100.0 * float(y.mean()) if len(y) else 0.0,
+            )
+            return X, y, used_symbols, all_dates
+
         y = np.concatenate(y_parts)
         return X, y, used_symbols, all_dates
 
@@ -187,15 +229,18 @@ class ModelTrainingService:
         if not symbols:
             raise ModelTrainingError("训练股票列表为空")
 
-        label_mode = "relative" if str(label_mode).lower() == "relative" else "absolute"
+        _lm = str(label_mode).lower()
+        label_mode = _lm if _lm in ("relative", "cross_section") else "absolute"
         algorithm = "lightgbm" if str(algorithm).lower() in ("lightgbm", "lgbm", "gbdt") else "logistic"
         lookback_days = int(max(120, min(lookback_days, 1200)))
         horizon = int(max(1, min(horizon, 20)))
         started = datetime.now()
+        _lm_label = {
+            "relative": "跑赢大盘", "cross_section": "横截面强势前50%",
+        }.get(label_mode, "绝对涨跌")
         logger.info(
             "[train] 开始训练：模型=%s，股票=%d 只，回溯=%d 天，标签=未来%d日(%s)，联网刷新=%s",
-            model_name, len(symbols), lookback_days, horizon,
-            "跑赢大盘" if label_mode == "relative" else "绝对涨跌", refresh,
+            model_name, len(symbols), lookback_days, horizon, _lm_label, refresh,
         )
 
         X, y, used_symbols, all_dates = self._collect_samples(

@@ -119,6 +119,18 @@ def make_labels(
     return labels
 
 
+def make_forward_return(
+    close: pd.Series,
+    horizon: int = DEFAULT_LABEL_HORIZON,
+) -> pd.Series:
+    """连续「未来 horizon 日收益率」= close[t+h]/close[t] − 1（末 horizon 行=NaN）。
+
+    供横截面排序标签使用：先算连续远期收益，再在同一交易日横向排名分强弱。
+    """
+    horizon = int(max(1, horizon))
+    return close.shift(-horizon) / close - 1.0
+
+
 def make_labels_relative(
     close: pd.Series,
     market_close: pd.Series,
