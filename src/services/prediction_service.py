@@ -479,15 +479,21 @@ def _fit_logistic(
     return model
 
 
-# LightGBM 默认超参：偏保守，适配金融数据高噪声、抑制过拟合。
+# LightGBM 默认超参：强正则 + 早停，适配金融数据高噪声、抑制过拟合。
+# 设计取向：宁可欠拟合也别背题——降低树复杂度、提高叶最小样本、加 L1/L2 与列/行采样，
+# n_estimators 只是上限，实际训练轮数由验证集早停决定（见 _fit_lightgbm）。
 _GBM_DEFAULTS = dict(
-    num_leaves=31,
-    learning_rate=0.05,
-    n_estimators=300,
-    min_child_samples=200,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    reg_lambda=1.0,
+    num_leaves=15,
+    max_depth=5,
+    learning_rate=0.02,
+    n_estimators=3000,          # 仅上限；配合早停通常远用不满
+    min_child_samples=800,
+    subsample=0.7,
+    colsample_bytree=0.6,
+    reg_lambda=5.0,
+    reg_alpha=1.0,
+    min_split_gain=0.0,
+    early_stopping_rounds=50,   # 验证集 logloss 连续 N 轮不改善即停
 )
 
 
@@ -497,29 +503,42 @@ def _fit_lightgbm(
     *,
     class_weight: bool,
     params: Optional[Dict[str, Any]] = None,
+    X_valid: Optional[np.ndarray] = None,
+    y_valid: Optional[np.ndarray] = None,
+    num_boost_round: Optional[int] = None,
 ) -> "LightGBMModel":
     """在给定样本上训练 LightGBM 二分类模型，返回封装模型。
 
     class_weight=True 时用 scale_pos_weight=负/正 平衡类别（对齐逻辑回归口径）。
     树模型无需标准化，直接吃原始特征。
+
+    早停/轮数控制：
+    - 传入 (X_valid,y_valid) 且未指定 num_boost_round 时，用验证集做早停，
+      训练到 logloss 不再改善为止（best_iteration 记录在 booster 上）。
+    - 传入 num_boost_round 时，固定训练该轮数、不早停（用于「全量 refit 复用
+      早停得到的最优轮数」，避免全量数据上又过拟合）。
     """
     import lightgbm as lgb
 
     hp = dict(_GBM_DEFAULTS)
     if params:
         hp.update(params)
-    n_estimators = int(hp.pop("n_estimators", 300))
+    max_rounds = int(hp.pop("n_estimators", 3000))
+    early = int(hp.pop("early_stopping_rounds", 0) or 0)
 
     lgb_params: Dict[str, Any] = {
         "objective": "binary",
         "metric": "binary_logloss",
         "num_leaves": int(hp["num_leaves"]),
+        "max_depth": int(hp.get("max_depth", -1)),
         "learning_rate": float(hp["learning_rate"]),
         "min_child_samples": int(hp["min_child_samples"]),
         "bagging_fraction": float(hp["subsample"]),
         "bagging_freq": 1,
         "feature_fraction": float(hp["colsample_bytree"]),
         "lambda_l2": float(hp["reg_lambda"]),
+        "lambda_l1": float(hp.get("reg_alpha", 0.0)),
+        "min_split_gain": float(hp.get("min_split_gain", 0.0)),
         "verbosity": -1,
         "num_threads": 0,
     }
@@ -533,7 +552,23 @@ def _fit_lightgbm(
         return LightGBMModel(n_features=n_features, booster=None)
 
     dtrain = lgb.Dataset(X_raw, label=y, free_raw_data=False)
-    booster = lgb.train(lgb_params, dtrain, num_boost_round=n_estimators)
+
+    # 固定轮数模式（全量 refit 复用早停最优轮数）
+    if num_boost_round is not None:
+        booster = lgb.train(lgb_params, dtrain, num_boost_round=int(max(1, num_boost_round)))
+        return LightGBMModel(n_features=n_features, booster=booster)
+
+    # 早停模式（需验证集）
+    use_early = early > 0 and X_valid is not None and len(X_valid) > 0
+    if use_early:
+        dvalid = lgb.Dataset(X_valid, label=y_valid, reference=dtrain, free_raw_data=False)
+        booster = lgb.train(
+            lgb_params, dtrain, num_boost_round=max_rounds,
+            valid_sets=[dvalid],
+            callbacks=[lgb.early_stopping(early, verbose=False), lgb.log_evaluation(0)],
+        )
+    else:
+        booster = lgb.train(lgb_params, dtrain, num_boost_round=max_rounds)
     return LightGBMModel(n_features=n_features, booster=booster)
 
 
@@ -547,10 +582,20 @@ def _fit_model(
     l2: float,
     class_weight: bool,
     gbm_params: Optional[Dict[str, Any]] = None,
+    X_valid: Optional[np.ndarray] = None,
+    y_valid: Optional[np.ndarray] = None,
+    num_boost_round: Optional[int] = None,
 ):
-    """按 algorithm 选择拟合器：'lightgbm' → 树模型；否则逻辑回归。"""
+    """按 algorithm 选择拟合器：'lightgbm' → 树模型；否则逻辑回归。
+
+    lightgbm 分支支持早停(传 X_valid/y_valid)与固定轮数(传 num_boost_round)；
+    逻辑回归分支忽略这些参数。
+    """
     if algorithm == "lightgbm":
-        return _fit_lightgbm(X, y, class_weight=class_weight, params=gbm_params)
+        return _fit_lightgbm(
+            X, y, class_weight=class_weight, params=gbm_params,
+            X_valid=X_valid, y_valid=y_valid, num_boost_round=num_boost_round,
+        )
     return _fit_logistic(X, y, epochs=epochs, lr=lr, l2=l2, class_weight=class_weight)
 
 
@@ -634,10 +679,20 @@ def train_model(
         X_valid, y_valid = X[valid_start:], y[valid_start:]
 
     # 评估用模型：仅在训练段拟合，验证段完全样本外（诚实估计泛化能力）
+    # lightgbm 用验证段做早停，训练到不再改善即止（抑制过拟合）。
     eval_model = _fit_model(
         algorithm, X_train, y_train,
         epochs=epochs, lr=lr, l2=l2, class_weight=class_weight, gbm_params=gbm_params,
+        X_valid=X_valid, y_valid=y_valid,
     )
+
+    # 记录 lightgbm 早停得到的最优轮数，供全量 refit 复用（避免全量数据上再次过拟合）
+    best_rounds: Optional[int] = None
+    if algorithm == "lightgbm":
+        booster = getattr(eval_model, "booster", None)
+        bi = int(getattr(booster, "best_iteration", 0) or 0) if booster is not None else 0
+        if bi > 0:
+            best_rounds = bi
 
     def _accuracy(model: Any, Xa: np.ndarray, ya: np.ndarray) -> Optional[float]:
         if len(Xa) == 0:
@@ -659,12 +714,16 @@ def train_model(
         "epochs": epochs,
         "learning_rate": lr,
     }
+    if best_rounds is not None:
+        metrics["best_iteration"] = best_rounds
 
-    # 上线模型：用全部有标签样本重训，吃到最新行情；否则退回评估模型
+    # 上线模型：用全部有标签样本重训，吃到最新行情；否则退回评估模型。
+    # lightgbm 复用早停得到的最优轮数(best_rounds)，全量数据上按固定轮数训练，不再过拟合。
     if refit_full and n > 0:
         final_model = _fit_model(
             algorithm, X, y,
             epochs=epochs, lr=lr, l2=l2, class_weight=class_weight, gbm_params=gbm_params,
+            num_boost_round=best_rounds,
         )
     else:
         final_model = eval_model
