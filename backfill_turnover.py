@@ -4,11 +4,9 @@
 换手率回填 入口（CLI）
 =========================================
 
-全市场 OHLCV 回填以腾讯为主源（快、稳），但腾讯不提供换手率，导致
-stock_daily.turnover_rate 大面积为空。本脚本作为「第 2 层」，用新浪
-(ak.stock_zh_a_daily) 的逐日流通股本按
-    换手率(%) = 成交量 ÷ 流通股本 × 100
-计算，只补 turnover_rate 为空的行（幂等、可反复运行、可断点续传）。
+全市场 K 线回填以 Efinance/Tencent 等为主源（→ stock_daily）；
+换手率等截面字段在 stock_daily_quote，由 westock ``quote --date`` 逐日拉取。
+本脚本补漏：找出 K 线已有但 quote 截面缺失的行并重拉。
 
 用法：
   # 先看有多少票/行需要补（不写库）
@@ -75,6 +73,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None, help="最多处理多少只票（试跑用）")
     parser.add_argument("--progress", type=str, default=None, help="断点续传进度文件路径（JSON）")
     parser.add_argument("--list", action="store_true", help="只统计需要补的票/行数后退出（不写库）")
+    parser.add_argument("--recompute-approx", action="store_true",
+                        help="重算近似源(腾讯现算)的换手率：用新浪逐日流通股本覆盖错值"
+                             "（默认只补 NULL，不动已有值）")
+    parser.add_argument("--start", type=str, default=None, help="只处理该日期起(含) YYYY-MM-DD")
+    parser.add_argument("--end", type=str, default=None, help="只处理该日期止(含) YYYY-MM-DD")
     parser.add_argument("--debug", action="store_true", help="调试日志")
     return parser.parse_args()
 
@@ -101,14 +104,26 @@ def main() -> int:
     if args.codes:
         codes = [c.strip().upper() for c in args.codes.split(",") if c.strip()]
 
+    from datetime import datetime as _dt
+
+    def _pd(s: Optional[str]):
+        return _dt.strptime(s, "%Y-%m-%d").date() if s else None
+
+    start_d = _pd(args.start)
+    end_d = _pd(args.end)
+
     service = TurnoverBackfillService()
 
     if args.list:
-        targets = service.find_targets(codes=codes)
+        targets = service.find_targets(
+            codes=codes, recompute_approx=args.recompute_approx,
+            start=start_d, end=end_d,
+        )
         total_rows = sum(v[2] for v in targets.values())
-        print("\n===== 换手率缺失统计 =====")
-        print(f"缺失票数: {len(targets)}")
-        print(f"缺失行数: {total_rows}")
+        head = "换手率待重算统计" if args.recompute_approx else "换手率缺失统计"
+        print(f"\n===== {head} =====")
+        print(f"命中票数: {len(targets)}")
+        print(f"命中行数: {total_rows}")
         if targets:
             sample = list(targets.items())[:10]
             print("样例(code: 起~止 缺失行数):")
@@ -123,6 +138,9 @@ def main() -> int:
         retry=args.retry,
         limit=args.limit,
         progress_path=args.progress,
+        recompute_approx=args.recompute_approx,
+        start=start_d,
+        end=end_d,
     )
     _print_summary(stats)
     return 0

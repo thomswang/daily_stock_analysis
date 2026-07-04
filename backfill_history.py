@@ -196,7 +196,8 @@ def _print_summary(stats: dict) -> None:
     print(f"跳过(已最新): {stats['skipped']}")
     print(f"返回为空: {stats['empty']}")
     print(f"失败:     {stats['failed']}")
-    print(f"新增行数: {stats['rows_added']}")
+    print(f"新增 K 线行数: {stats['rows_added']}")
+    print(f"quote 截面: {stats.get('quote_rows', 0)} 行")
     print("====================\n")
 
 

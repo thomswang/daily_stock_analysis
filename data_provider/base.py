@@ -1241,12 +1241,100 @@ class DataFetcherManager:
             self._fetchers.sort(key=lambda f: f.priority)
             self._refresh_fetcher_indexes_locked()
     
+    def _get_daily_data_pinned(
+        self,
+        stock_code: str,
+        fetcher: BaseFetcher,
+        *,
+        market: str,
+        start_date: Optional[str],
+        end_date: Optional[str],
+        days: int,
+        request_start: float,
+    ) -> Tuple[pd.DataFrame, str]:
+        """只调用单一数据源，失败直接抛错，不 failover。"""
+        if not self._is_daily_source_available(fetcher, market):
+            raise DataFetchError(self._daily_source_unavailable_error(fetcher))
+
+        attempt_start = time.time()
+        try:
+            logger.info(
+                "[数据源锁定] %s 仅使用 [%s]（无 failover）",
+                stock_code,
+                fetcher.name,
+            )
+            record_provider_run_started(
+                data_type="daily_data",
+                provider=fetcher.name,
+                operation="get_daily_data",
+            )
+            df = self._call_fetcher_method(
+                fetcher,
+                "get_daily_data",
+                stock_code=stock_code,
+                start_date=start_date,
+                end_date=end_date,
+                days=days,
+            )
+            if df is not None and not df.empty:
+                duration_ms = int((time.time() - attempt_start) * 1000)
+                record_provider_run(
+                    data_type="daily_data",
+                    provider=fetcher.name,
+                    operation="get_daily_data",
+                    success=True,
+                    latency_ms=duration_ms,
+                    record_count=len(df),
+                )
+                elapsed = time.time() - request_start
+                logger.info(
+                    f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "
+                    f"rows={len(df)}, elapsed={elapsed:.2f}s"
+                )
+                self._record_daily_source_success(fetcher, market)
+                return df, fetcher.name
+
+            duration_ms = int((time.time() - attempt_start) * 1000)
+            record_provider_run(
+                data_type="daily_data",
+                provider=fetcher.name,
+                operation="get_daily_data",
+                success=False,
+                latency_ms=duration_ms,
+                error_type="empty",
+                error_message="empty result",
+                record_count=0,
+            )
+            if df is not None and df.empty:
+                self._record_daily_source_success(fetcher, market)
+            raise DataFetchError(f"[{fetcher.name}] 返回空数据: {stock_code}")
+        except DataFetchError:
+            raise
+        except Exception as exc:
+            error_type, error_reason = summarize_exception(exc)
+            duration_ms = int((time.time() - attempt_start) * 1000)
+            record_provider_run(
+                data_type="daily_data",
+                provider=fetcher.name,
+                operation="get_daily_data",
+                success=False,
+                latency_ms=duration_ms,
+                error_type=error_type,
+                error_message=error_reason,
+            )
+            self._record_daily_source_failure(fetcher, market, error_reason)
+            raise DataFetchError(
+                f"[{fetcher.name}] ({error_type}) {error_reason}"
+            ) from exc
+
     def get_daily_data(
         self, 
         stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30
+        days: int = 30,
+        *,
+        source: Optional[str] = None,
     ) -> Tuple[pd.DataFrame, str]:
         """
         获取日线数据（自动切换数据源）
@@ -1263,6 +1351,7 @@ class DataFetcherManager:
             start_date: 开始日期
             end_date: 结束日期
             days: 获取天数
+            source: 指定唯一数据源（如 ``TencentFetcher``），失败不切换其它平台
             
         Returns:
             Tuple[DataFrame, str]: (数据, 成功的数据源名称)
@@ -1279,10 +1368,6 @@ class DataFetcherManager:
         errors = []
         request_start = time.time()
 
-        # 快速路径：美股使用专用数据源路由；港股先过滤不支持港股日线的数据源
-        #   - 配置长桥凭据后: Longbridge 为首选, YFinance/AkShare 兜底
-        #   - 未配置长桥:     YFinance 为首选（美股）, 通用 fetcher 循环（港股）
-        #   - 美股指数:       始终 YFinance 为首选（Longbridge 不提供指数K线）
         is_us_index = is_us_index_code(stock_code)
         is_us = is_us_index or is_us_stock_code(stock_code)
         is_hk = (not is_us) and _is_hk_market(stock_code)
@@ -1293,6 +1378,23 @@ class DataFetcherManager:
         if market != "cn":
             fetchers = self._filter_daily_fetchers_for_market(fetchers, market)
         fetchers = self._filter_fetchers_by_capability(fetchers, capability="daily_data")
+
+        if source:
+            fetchers = [f for f in fetchers if f.name == source]
+            if not fetchers:
+                raise DataFetchError(
+                    f"指定数据源 {source} 不可用（市场={market}，代码={stock_code}）"
+                )
+            return self._get_daily_data_pinned(
+                stock_code,
+                fetchers[0],
+                market=market,
+                start_date=start_date,
+                end_date=end_date,
+                days=days,
+                request_start=request_start,
+            )
+
         total_fetchers = len(fetchers)
 
         if total_fetchers == 0:

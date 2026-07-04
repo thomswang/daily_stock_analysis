@@ -53,7 +53,7 @@ def _sharpe(rets, per_year):
 
 
 def run(args):
-    X, pool = collect_pool(args.stocks, args.horizon)
+    X, pool = collect_pool(args.stocks, args.horizon, lookback=args.lookback)
     H = args.horizon
     per_year = TRADING_DAYS_YEAR / H
     emb_days = int(H * 1.6)
@@ -172,9 +172,11 @@ def report(r: pd.DataFrame, args, per_year):
 
 def parse_args():
     p = argparse.ArgumentParser(description="CPCV 策略稳健性背书")
-    p.add_argument("--stocks", type=int, default=1000)
+    p.add_argument("--stocks", type=int, default=1000, help="抽样股票数；<=0 全市场")
     p.add_argument("--start", type=str, default="2022-01-01", help="评估区间起点(之前的数据仅供训练)")
     p.add_argument("--horizon", type=int, default=5)
+    p.add_argument("--lookback", type=int, default=1600,
+                   help="每票回溯自然日(默认1600≈到2019；跑2018需≥2600)")
     p.add_argument("--blocks", type=int, default=8, help="时间分块数 N")
     p.add_argument("--test-blocks", type=int, default=2, help="每组合测试块数 K")
     return p.parse_args()

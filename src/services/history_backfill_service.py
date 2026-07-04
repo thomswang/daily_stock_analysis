@@ -9,7 +9,10 @@
 
 设计要点（与主分析/预测/训练解耦，复用同一套缓存）：
 1. **代码清单**：默认读 stocks.index.json，筛选 A 股（country=CN & type=stock）。
-2. **拉取**：DataFetcherManager.get_daily_data(code, start_date, end_date)（支持区间）。
+2. **拉取（分两层、分两表、腾讯专用）**：
+   - 第 1 层：TencentFetcher fqkline → stock_daily（时间序列 OHLCV，source 锁定无 failover）
+   - 第 2 层：Tencent quote --date → stock_daily_quote（截面，含换手率/流通股本）
+   - 编排入口：DailyIngestService（src/ingest/）
 3. **落库**：StockRepository.save_dataframe()（按 code+date 幂等 upsert）。
 4. **断点续传**：DB 为真相源（get_coverage 查已存最早/最晚日期）+ JSON 进度台账
    记录每只票的状态/行数/错误，随时中断重跑自动跳过已完成的。
@@ -146,11 +149,20 @@ class HistoryBackfillService:
         from src.repositories.stock_repo import StockRepository
 
         self.repo = StockRepository(db_manager)
-        self._manager = None  # 延迟初始化 DataFetcherManager
+        self._ingest = None
+
+    @property
+    def ingest(self):
+        if self._ingest is None:
+            from src.ingest import DailyIngestService
+
+            self._ingest = DailyIngestService(self.repo)
+        return self._ingest
 
     @property
     def manager(self):
-        if self._manager is None:
+        """兼容旧调用；新回填路径请用 self.ingest（腾讯锁定，无 failover）。"""
+        if getattr(self, "_manager", None) is None:
             from data_provider.base import DataFetcherManager
 
             self._manager = DataFetcherManager()
@@ -286,6 +298,8 @@ class HistoryBackfillService:
         stats = {
             "total": total, "fetched": 0, "skipped": 0,
             "failed": 0, "empty": 0, "rows_added": 0,
+            "turnover_rows": 0,
+            "quote_rows": 0,
         }
 
         for i, raw in enumerate(codes, 1):
@@ -330,6 +344,7 @@ class HistoryBackfillService:
             else:  # fetched
                 stats["fetched"] += 1
                 stats["rows_added"] += result.get("added", 0)
+                stats["quote_rows"] += result.get("quote_rows", 0)
                 ledger.update(
                     code, status="done", error=None, min_start=_iso(new_min),
                     first=_iso(result.get("first")), last=_iso(result.get("last")),
@@ -350,9 +365,9 @@ class HistoryBackfillService:
         ledger.set_meta(finished_at=datetime.now().isoformat(timespec="seconds"))
         ledger.save()
         logger.info(
-            "回填结束：拉取 %d / 跳过 %d / 失败 %d / 空 %d，新增行 %d，台账：%s",
+            "回填结束：拉取 %d / 跳过 %d / 失败 %d / 空 %d，新增 K 线 %d，quote 截面 %d，台账：%s",
             stats["fetched"], stats["skipped"], stats["failed"],
-            stats["empty"], stats["rows_added"], progress_path,
+            stats["empty"], stats["rows_added"], stats["quote_rows"], progress_path,
         )
         return stats
 
@@ -380,39 +395,51 @@ class HistoryBackfillService:
         used_source = None
         got_any = False
         for seg_start, seg_end in segments:
-            df, source, err = self._fetch_with_retry(
-                code, seg_start.isoformat(), seg_end.isoformat(), retry=retry
+            result, err = self._ingest_with_retry(
+                code, seg_start, seg_end, retry=retry
             )
-            # 只要实际发起了网络请求就限流
             if sleep > 0:
                 time.sleep(sleep)
 
             if err is not None:
-                # 已成功拉过至少一段则不判失败，保留已入库数据
                 if got_any:
                     logger.warning("%s 分段 %s~%s 拉取失败：%s（已保留其余段）",
                                    code, seg_start, seg_end, err)
                     continue
-                # “确定无数据”（如次新股在请求区间尚未上市）→ 记为 empty 终态，不再重试
                 if _is_no_data_error(err):
                     return {"action": "empty", "error": err}
                 return {"action": "failed", "error": err}
-            if df is None or df.empty:
-                continue
-
-            added = self.repo.save_dataframe(df, code, data_source=source or "backfill")
-            total_added += int(added)
-            used_source = source or used_source
-            got_any = True
+            if result is not None:
+                total_added += int(result.kline_added)
+                used_source = result.kline_source or used_source
+                got_any = True
 
         if not got_any:
             return {"action": "empty"}
+
+        quote_rows = 0
+        if _is_cn_a_share(code):
+            quote_span_start = min(s for s, _ in segments)
+            quote_span_end = max(e for _, e in segments)
+            try:
+                q = self.ingest.ingest_quote(
+                    code, start=quote_span_start, end=quote_span_end,
+                )
+                quote_rows = q.quote_added
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "%s quote 截面回填失败 [%s~%s]: %s",
+                    code, quote_span_start, quote_span_end, exc,
+                )
+            if sleep > 0:
+                time.sleep(sleep)
 
         cov2 = self.repo.get_coverage(code)
         return {
             "action": "fetched", "added": total_added,
             "first": cov2.get("first"), "last": cov2.get("last"),
             "rows": cov2.get("rows"), "source": used_source,
+            "quote_rows": quote_rows,
         }
 
     @staticmethod
@@ -463,24 +490,32 @@ class HistoryBackfillService:
             return []
         return [(start_d, end_d)] if start_d <= end_d else []
 
-    def _fetch_with_retry(self, code: str, start: str, end: str, *, retry: int):
-        """返回 (df, source, error_str)。error_str 为 None 表示成功。"""
+    def _ingest_with_retry(
+        self, code: str, seg_start: date, seg_end: date, *, retry: int,
+    ):
+        """返回 (IngestResult|None, error_str)。error_str 为 None 表示成功。"""
         from data_provider.base import DataFetchError
 
         last_err = None
         for attempt in range(retry + 1):
             try:
-                df, source = self.manager.get_daily_data(
-                    code, start_date=start, end_date=end
-                )
-                return df, source, None
+                result = self.ingest.ingest_kline(code, start=seg_start, end=seg_end)
+                return result, None
             except DataFetchError as exc:
                 last_err = str(exc)
             except Exception as exc:  # noqa: BLE001
                 last_err = f"{type(exc).__name__}: {exc}"
             if attempt < retry:
-                time.sleep(0.5 * (attempt + 1))  # 退避
-        return None, None, last_err
+                time.sleep(0.5 * (attempt + 1))
+        return None, last_err
+
+
+def _is_cn_a_share(code: str) -> bool:
+    """是否为 A 股 6 位数字代码（含北交所）。"""
+    from data_provider.base import normalize_stock_code
+
+    plain = normalize_stock_code(code)
+    return plain.isdigit() and len(plain) == 6
 
 
 def _parse_date(s: str) -> Optional[date]:

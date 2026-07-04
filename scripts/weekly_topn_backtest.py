@@ -41,7 +41,7 @@ from src.services.history_backfill_service import HistoryBackfillService
 from src.services.model_training_service import MIN_NAMES_PER_DAY
 from src.services.prediction_service import (
     FEATURE_ORDER,
-    _load_daily_df,
+    _load_cached_df,
     build_features,
     load_market_df,
     make_forward_return,
@@ -55,12 +55,15 @@ def log(*a):
     print(*a, flush=True)
 
 
-def collect_pool(n_stocks, horizon, keep_st, seed=7):
+def collect_pool(n_stocks, horizon, keep_st, seed=7, lookback=1600):
     """构造样本池：X(特征) + fwd(训练标签用) + open/close(真实成交) + date/code。"""
     codes = HistoryBackfillService().load_all_cn_codes()
     name_map = HistoryBackfillService().load_cn_name_map()
     rng = np.random.default_rng(seed)
-    codes = list(rng.permutation(codes))[:n_stocks]
+    if n_stocks and n_stocks > 0:
+        codes = list(rng.permutation(codes))[:n_stocks]  # 抽样
+    else:
+        codes = list(codes)  # n_stocks<=0 → 全市场
     mkt = load_market_df()
     Xs, fwd, dts, cds, ops, cls = [], [], [], [], [], []
     ok = 0
@@ -68,7 +71,7 @@ def collect_pool(n_stocks, horizon, keep_st, seed=7):
         if not keep_st and "ST" in (name_map.get(code.upper(), "")).upper():
             continue
         try:
-            df, _ = _load_daily_df(code, 1600, use_cache=True, refresh=False, resolve_name=False)
+            df = _load_cached_df(code, lookback)  # 纯读本地缓存，绝不联网
         except Exception:
             continue
         if df is None or df.empty or "open" not in df.columns:
@@ -191,7 +194,7 @@ ASCII_MAP = {
 
 
 def run(args):
-    X, pool = collect_pool(args.stocks, args.horizon, args.keep_st)
+    X, pool = collect_pool(args.stocks, args.horizon, args.keep_st, lookback=args.lookback)
     ind_map = _load_ind_map()
     start, end = pd.Timestamp(args.start), pd.Timestamp(args.end)
     emb = pd.Timedelta(days=int(args.horizon * 1.6))
@@ -219,7 +222,8 @@ def run(args):
         if len(prior) == 0:
             continue
         signal_day = prior.max()
-        mkey = (entry.year, entry.month)
+        rm = max(1, int(args.retrain_months))
+        mkey = (entry.year * 12 + (entry.month - 1)) // rm  # 每 rm 个月重训一次
         if mkey != cur_key:
             tr_hi = pd.Timestamp(signal_day) - emb
             tr_lo = pd.Timestamp(signal_day) - pd.Timedelta(days=int(args.train_days * 1.5))
@@ -356,12 +360,16 @@ def report(results, args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="周度 Top-N 选股回测")
-    p.add_argument("--stocks", type=int, default=1500)
+    p.add_argument("--stocks", type=int, default=1500, help="抽样股票数；<=0 表示全市场")
     p.add_argument("--top-n", type=int, default=20)
     p.add_argument("--start", type=str, default="2024-01-01")
     p.add_argument("--end", type=str, default="2026-07-01")
     p.add_argument("--train-days", type=int, default=756)
     p.add_argument("--horizon", type=int, default=5, help="训练标签前瞻天数(≈周)")
+    p.add_argument("--lookback", type=int, default=1600,
+                   help="每票回溯自然日(默认1600≈到2019；跑2018需≥2600)")
+    p.add_argument("--retrain-months", type=int, default=1,
+                   help="每几个月重训一次(默认1=月度；长周期建议3=季度以缩短耗时)")
     p.add_argument("--cost-bps", type=float, default=10.0, help="单边成本(基点)")
     p.add_argument("--keep-st", action="store_true", help="保留 ST 股(默认剔除)")
     p.add_argument("--keep-rank", type=int, default=40, help="排名缓冲阈值：跌出该名次才换出")

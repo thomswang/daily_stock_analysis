@@ -214,9 +214,9 @@ class RecommendationItem(BaseModel):
 
 class StrategyHint(BaseModel):
     """经回测选出的最优交易口径（供前端展示"怎么用这份清单"）。"""
-    name: str = Field(..., description="口径名，如 双周·概率加权·行业≤3")
+    name: str = Field(..., description="口径名，如 双周·等权·行业≤3")
     rebalance: str = Field(..., description="调仓节奏，如 每2周(周一开盘)")
-    weighting: str = Field(..., description="权重方式，如 概率加权")
+    weighting: str = Field(..., description="权重方式，如 等权")
     industry_cap: Optional[int] = Field(None, description="每个行业最多几只(全市场推荐时生效)")
     backtest: Optional[str] = Field(None, description="回测口径表现摘要")
 

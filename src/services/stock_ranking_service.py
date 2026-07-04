@@ -10,7 +10,7 @@
 分层与性能取舍：
     - compute_snapshot()  重活：扫全市场逐票打分 → 落库(stock_rank_snapshot)。
       给全市场每只票构造特征+推理很重，故由后台任务/定时每日算一次。
-    - get_recommendations() 轻活：读快照 + 按行业过滤 + 组内重排 + 概率加权，
+    - get_recommendations() 轻活：读快照 + 按行业过滤 + 组内重排 + 等权建议权重，
       毫秒级返回。「全市场打分只算一次，行业榜靠过滤派生」是核心设计。
 
 用途拆分（与 prediction_service 一致）：
@@ -119,13 +119,15 @@ class StockRankingService:
             "model_version": record.get("version"),
         }
 
-    # 经 walk-forward 回测选出的最优交易口径（把清单落到实盘怎么用）
-    #   双周·概率加权·行业≤3：夏普 0.84 vs 基准 0.57，最大回撤 -14.7% vs -21.7%（扣成本）
+    # 经长周期 walk-forward 回测选出的最优交易口径（把清单落到实盘怎么用）
+    #   双周·等权·缓冲·行业≤3：2020–2026 样本外扣成本 夏普 0.80、回撤 -16.6%，
+    #   优于等权基准（夏普 0.64 / 回撤 -29.1%）。长周期下等权稳定优于概率加权
+    #   （概率加权的优势仅存在于 2024–2026 短窗，跨多状态后消失，见 docs/backtest-report-2018.md）。
     STRATEGY_HINT = {
-        "name": "双周·概率加权·行业≤3",
+        "name": "双周·等权·缓冲·行业≤3",
         "rebalance": "每2周·周一开盘买入/期末周五收盘",
-        "weighting": "概率加权(强度越高权重越大)",
-        "backtest": "walk-forward 扣成本：年化≈13%、夏普0.84、回撤-14.7%（基准夏普0.57/回撤-21.7%）",
+        "weighting": "等权(入选每只票权重相同)",
+        "backtest": "长周期回测(2020–2026,扣成本)：年化≈19.4%、夏普0.80、回撤-16.6%（等权基准夏普0.64/回撤-29.1%）",
     }
     DEFAULT_INDUSTRY_CAP = 3  # 全市场推荐时每行业最多几只（分散、抗扎堆）
 
@@ -137,12 +139,12 @@ class StockRankingService:
         industry_cap: Optional[int] = DEFAULT_INDUSTRY_CAP,
         as_of_date: Optional[date] = None,
     ) -> Dict[str, Any]:
-        """读取当日快照，按行业(可选)出强弱榜；给出全局分位与概率加权建议权重。
+        """读取当日快照，按行业(可选)出强弱榜；给出全局分位与等权建议权重。
 
         - industry=None：全市场强弱榜，默认按 industry_cap 做行业分散（每行业≤N 只），
-          避免清单被单一板块霸榜（回测显示分散+概率加权+双周调仓风险调整后最优）。
+          避免清单被单一板块霸榜（长周期回测显示分散+等权+双周调仓风险调整后最优）。
         - industry=X：仅该行业内排名（行业内自然无需再设上限）。
-        分位(rank_pct)按所选范围全体计算；建议权重在返回清单内概率加权归一(∑=1)。
+        分位(rank_pct)按所选范围全体计算；建议权重在返回清单内等权归一(∑=1)。
         """
         top_n = int(max(1, min(top_n, 200)))
         rows = self.repo.get_ranking(industry=industry, as_of_date=as_of_date)
@@ -157,7 +159,6 @@ class StockRankingService:
         pct = pd.Series(s).rank(pct=True, method="average").to_numpy()
         for i, r in enumerate(rows):
             r["rank_pct"] = round(float(pct[i]), 4)
-        med = float(np.median(s))  # 权重基准用全体中位，避免受裁剪影响
 
         # 行业分散上限：仅全市场推荐生效（行业查询本身已聚焦单行业）
         cap = industry_cap if (industry is None and industry_cap and industry_cap > 0) else None
@@ -177,11 +178,11 @@ class StockRankingService:
         picks = selectable[:top_n]
         for i, r in enumerate(picks):  # 展示名次按最终清单重排 1..N
             r["rank"] = i + 1
-        # 组合建议权重：清单内按「高于全体中位的强度」取正归一（∑=1）
-        pos = np.clip(np.array([r["strength_score"] for r in picks]) - med, 0.0, None)
-        wsum = float(pos.sum()) or 1.0
-        for r, wv in zip(picks, pos / wsum):
-            r["suggested_weight"] = round(float(wv), 4)
+        # 组合建议权重：等权（∑=1）。长周期回测显示等权稳定优于概率加权，
+        # 故线上口径与回测最优（双周·等权·缓冲·行业≤3）保持一致。
+        ew = 1.0 / len(picks) if picks else 0.0
+        for r in picks:
+            r["suggested_weight"] = round(ew, 4)
 
         as_of = rows[0].get("as_of_date")
         return {

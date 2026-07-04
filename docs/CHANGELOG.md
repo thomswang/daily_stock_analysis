@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增周度 Top-N 回测脚本 `scripts/weekly_topn_backtest.py`（周一开盘买/周五收盘卖，两阶段结构，支持调仓频率与行业分散上限多口径对比，剔除 ST、扣成本、防未来函数）。
 - [文档] 更新 `docs/prediction-architecture.md` 训练/预测/打分口径（标签模式、LightGBM、全局时序切分+embargo、约30个特征、横截面选股与推荐、CLI/接口）；新增 `docs/backtest-methodology.md` 回测方法论；`docs/INDEX.md` 挂载新文档。
 - [chore] `AGENTS.md` 新增硬规则：改动模型训练/特征/标签/预测打分/回测/选股策略逻辑时，必须同步 `docs/prediction-architecture.md`、`docs/backtest-methodology.md` 与 `docs/CHANGELOG.md`；并镜像到 `.github/instructions/backend.instructions.md`（Copilot 分层补充，applyTo 扩展至 `train_model.py`/`rank_snapshot.py`/`scripts/**`）。
+- [改进] 回测脚本支持 2018 起长周期：`scripts/weekly_topn_backtest.py`、`scripts/walk_forward_backtest.py` 新增 `--lookback`（每票回溯自然日，2018 需 3000）、`--retrain-months`（重训频率，长周期建议季度=3）参数，`--stocks<=0` 支持全市场；数据加载改为纯离线读缓存（`_load_cached_df`，绝不联网，避免次新股穿透联网触发限流/熔断）。
+- [文档] 新增 `docs/backtest-report-2018.md`（选股推荐策略 2018 起数据、样本外 2020→2026 长周期回测报告：数据口径、防泄露逻辑、多口径结果、分市场状态归因、幸存者偏差等局限）；`docs/backtest-methodology.md` 补充 §2 离线/回溯/范围原则与幸存者偏差提示、§6.4 长周期回测、§6.3 结论按长周期复核更新；`docs/INDEX.md` 挂载报告。
+- [改进] 选股推荐线上口径按长周期回测结论调整：`StockRankingService` 建议权重由「概率加权」改为「等权」，`STRATEGY_HINT` 更新为「双周·等权·缓冲·行业≤3」（2020–2026 样本外 夏普0.80/回撤-16.6%，优于概率加权 0.66）；同步接口描述、Schema 示例、前端「选股推荐」页文案与 `docs/prediction-architecture.md`。缘由：概率加权的优势仅存在于 2024–2026 短窗，跨多市场状态后消失（过拟合嫌疑）。
 
 - [修复] Discord 长报告推送按 2000 字符上限分片逐段发送，遇到 429 限流会按 `retry_after`/`Retry-After` 有限重试，避免中途失败后只收到前半段报告。
 - [改进] #1777 台股三大法人 fetcher（`TwInstitutionalFetcher`）增加缓存防击穿：并发同 (市场, 日期) 调用合并为单次上游请求，保护 TWSE T86 ~3 req/5s 限流额度；不同 key 仍并行；新增并发单次抓取、不同 key 各抓一次、HTTP 错误 fail-open 回归测试。

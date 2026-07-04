@@ -24,8 +24,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -798,20 +799,33 @@ def project_price_path(
 # ─────────────────────────────────────────────
 # 主流程
 # ─────────────────────────────────────────────
-def _rows_to_df(rows: list) -> pd.DataFrame:
-    """把 StockDaily ORM 行转换为特征工程所需的日线 DataFrame。"""
-    records = [
-        {
+def _rows_to_df(rows: list, quote_by_date: Optional[Dict[date, Any]] = None) -> pd.DataFrame:
+    """把 StockDaily ORM 行转换为特征工程所需的日线 DataFrame。
+
+    换手率**权威源**为 stock_daily_quote（quote --date 截面，逐日 40 列）；
+    stock_daily 的同名列已 deprecated（各源 kline 口径差异大，会污染训练数据）。
+    如需临时兼容旧库，设置环境变量 ``DSA_LEGACY_TURNOVER_FALLBACK=1`` 打开退回。
+    """
+    quote_by_date = quote_by_date or {}
+    allow_legacy = os.getenv("DSA_LEGACY_TURNOVER_FALLBACK", "").lower() in ("1", "true", "yes")
+    records = []
+    for r in rows:
+        q = quote_by_date.get(r.date)
+        if q is not None:
+            turnover = q.turnover_rate
+        elif allow_legacy:
+            turnover = getattr(r, "turnover_rate", None)
+        else:
+            turnover = None
+        records.append({
             "date": r.date,
             "open": r.open,
             "high": r.high,
             "low": r.low,
             "close": r.close,
             "volume": r.volume,
-            "turnover_rate": getattr(r, "turnover_rate", None),
-        }
-        for r in rows
-    ]
+            "turnover_rate": turnover,
+        })
     df = pd.DataFrame.from_records(records)
     if not df.empty:
         df = df.sort_values("date").reset_index(drop=True)
@@ -830,7 +844,9 @@ def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
         # 多取一些日历日，保证 rolling/dropna 后仍有足够交易日样本
         start = end - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
         rows = repo.get_range(stock_code, start, end)
-        return _rows_to_df(rows) if rows else pd.DataFrame()
+        quote_rows = repo.get_quote_range(stock_code, start, end)
+        quote_by_date = {r.date: r for r in quote_rows}
+        return _rows_to_df(rows, quote_by_date) if rows else pd.DataFrame()
     except Exception as exc:  # noqa: BLE001 - 缓存读取失败不应中断预测
         logger.debug("读取 %s 的本地缓存失败，将走网络: %s", stock_code, exc)
         return pd.DataFrame()

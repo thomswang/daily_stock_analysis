@@ -42,7 +42,7 @@ from src.services.history_backfill_service import HistoryBackfillService
 from src.services.model_training_service import MIN_NAMES_PER_DAY
 from src.services.prediction_service import (
     FEATURE_ORDER,
-    _load_daily_df,
+    _load_cached_df,
     build_features,
     load_market_df,
     make_forward_return,
@@ -57,17 +57,20 @@ def log(*a):
 
 
 # ────────────────────────────── 样本池 ──────────────────────────────
-def collect_pool(n_stocks: int, horizon: int, seed: int = 7):
+def collect_pool(n_stocks: int, horizon: int, seed: int = 7, lookback: int = 1600):
     """构造全市场抽样的横截面样本池：X(特征) / fwd(未来H日收益) / date / code。"""
     codes = HistoryBackfillService().load_all_cn_codes()
     rng = np.random.default_rng(seed)
-    codes = list(rng.permutation(codes))[:n_stocks]
+    if n_stocks and n_stocks > 0:
+        codes = list(rng.permutation(codes))[:n_stocks]  # 抽样
+    else:
+        codes = list(codes)  # n_stocks<=0 → 全市场
     mkt = load_market_df()
     Xs, fwd, dts, cds, cls = [], [], [], [], []
     ok = 0
     for i, code in enumerate(codes):
         try:
-            df, _ = _load_daily_df(code, 1600, use_cache=True, refresh=False, resolve_name=False)
+            df = _load_cached_df(code, lookback)  # 纯读本地缓存，绝不联网
         except Exception:
             continue
         if df is None or df.empty:
@@ -157,7 +160,7 @@ STRATS = [
 
 
 def run(args):
-    X, pool = collect_pool(args.stocks, args.horizon)
+    X, pool = collect_pool(args.stocks, args.horizon, lookback=args.lookback)
     start, end = pd.Timestamp(args.start), pd.Timestamp(args.end)
     H, REBAL = args.horizon, args.rebal
     emb = pd.Timedelta(days=int(H * 1.6))
@@ -177,7 +180,8 @@ def run(args):
 
     for idx, d in enumerate(rebal_days):
         d_ts = pd.Timestamp(d)
-        mkey = (d_ts.year, d_ts.month)
+        rm = max(1, int(args.retrain_months))
+        mkey = (d_ts.year * 12 + (d_ts.month - 1)) // rm  # 每 rm 个月重训一次
         if mkey != cur_key:
             tr_hi = d_ts - emb
             tr_lo = d_ts - pd.Timedelta(days=int(args.train_days * 1.5))
@@ -303,11 +307,15 @@ def report(r: pd.DataFrame, args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="横截面策略滚动资金曲线回测")
-    p.add_argument("--stocks", type=int, default=1000, help="抽样股票数（默认1000）")
+    p.add_argument("--stocks", type=int, default=1000, help="抽样股票数（默认1000；<=0 全市场）")
     p.add_argument("--start", type=str, default="2024-01-01", help="回测开始日")
     p.add_argument("--end", type=str, default="2026-07-01", help="回测结束日")
     p.add_argument("--train-days", type=int, default=756, help="滚动训练窗口(交易日≈日历天*1.5)")
     p.add_argument("--horizon", type=int, default=5, help="训练标签前瞻天数")
+    p.add_argument("--lookback", type=int, default=1600,
+                   help="每票回溯自然日(默认1600≈到2019；跑2018需≥2600)")
+    p.add_argument("--retrain-months", type=int, default=1,
+                   help="每几个月重训一次(默认1=月度；长周期建议3=季度)")
     p.add_argument("--rebal", type=int, default=10, help="调仓间隔(交易日，默认10，降换手)")
     p.add_argument("--quantile", type=float, default=0.2, help="分桶分位（默认前后20%）")
     p.add_argument("--cost-bps", type=float, default=10.0, help="单边交易成本(基点，默认10bp=0.1%)")

@@ -85,14 +85,8 @@ class TencentFetcher(BaseFetcher):
             )
             return _empty_daily_frame()
 
-        # 腾讯历史 K 线本身不含换手率，但同一响应的 qt 实时快照带「流通股本」，
-        # 可直接算换手率(%) = 成交量 ÷ 流通股本 × 100，无需额外请求。
-        # 注意：qt 是当前快照，历史各日均用「当前流通股本」，对期间发生股本
-        # 变动（解禁/增发/回购）的票会有小偏差；需逐日精确值时由换手率回填(新浪)覆盖。
-        circ_shares = _extract_circulating_shares(payload, symbol)
-        if circ_shares and circ_shares > 0:
-            vol = pd.to_numeric(df["volume"], errors="coerce")
-            df = df.assign(turnover_rate=vol / circ_shares * 100)
+        # 腾讯 fqkline 不含逐日换手率；qt 快照为「当前」流通股本，不能用于历史推算。
+        # 换手率由 quote --date 写入 stock_daily_quote，不在此表填充。
         return df
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -103,13 +97,13 @@ class TencentFetcher(BaseFetcher):
         if "pct_chg" not in normalized.columns:
             normalized["pct_chg"] = normalized["close"].pct_change().fillna(0.0) * 100
         # 腾讯 K 线不含涨跌额/振幅/换手率；前两者用 OHLC 回看补算（无未来函数），
-        # 换手率无法从该接口获得，留空由换手率回填脚本补齐。
+        # 换手率由 quote --date → stock_daily_quote 分表存储。
         prev_close = normalized["close"].shift(1)
         normalized["change_amount"] = normalized["close"] - prev_close
         normalized["amplitude"] = (normalized["high"] - normalized["low"]) / prev_close * 100
         keep = [
             "date", "open", "high", "low", "close", "volume", "amount", "pct_chg",
-            "change_amount", "amplitude", "turnover_rate",
+            "change_amount", "amplitude",
         ]
         normalized = normalized[[c for c in keep if c in normalized.columns]]
         return normalized

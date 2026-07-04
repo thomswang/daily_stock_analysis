@@ -10,15 +10,25 @@
 """
 
 import logging
+import os
 from datetime import date
 from typing import Optional, List, Dict, Any
 
 import pandas as pd
 from sqlalchemy import and_, desc, func, select
 
-from src.storage import DatabaseManager, StockDaily
+from src.storage import DatabaseManager, StockDaily, StockDailyQuote
 
 logger = logging.getLogger(__name__)
+
+
+def _legacy_turnover_fallback() -> bool:
+    """是否允许从 stock_daily 的旧 turnover_rate / float_shares / volume_ratio 列兜底读取。
+
+    默认 False——stock_daily_quote 是唯一权威源。仅在需要兼容旧库时打开：
+        export DSA_LEGACY_TURNOVER_FALLBACK=1
+    """
+    return os.getenv("DSA_LEGACY_TURNOVER_FALLBACK", "").lower() in ("1", "true", "yes")
 
 
 class StockRepository:
@@ -158,6 +168,65 @@ class StockRepository:
                 .limit(1)
             ).scalar_one_or_none()
             return row
+
+    def get_quote_range(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+    ) -> List[StockDailyQuote]:
+        """获取 stock_daily_quote 指定日期范围的截面数据。"""
+        try:
+            return self.db.get_daily_quote_range(code, start_date, end_date)
+        except Exception as e:
+            logger.error(f"获取 quote 截面失败: {e}")
+            return []
+
+    def get_range_merged(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+    ) -> List[Dict[str, Any]]:
+        """K 线 + quote 截面 join（按 date 对齐，供训练/特征工程）。
+
+        权威源：换手率 / 流通股本 / 量比 来自 stock_daily_quote；
+        stock_daily 的同名列已 deprecated（详见 storage.py::StockDaily）。
+        如需兼容旧库，设置 ``DSA_LEGACY_TURNOVER_FALLBACK=1`` 打开兜底。
+        """
+        daily_rows = self.get_range(code, start_date, end_date)
+        quote_rows = self.get_quote_range(code, start_date, end_date)
+        quote_by_date = {r.date: r for r in quote_rows}
+        allow_legacy = _legacy_turnover_fallback()
+        merged: List[Dict[str, Any]] = []
+        for row in daily_rows:
+            q = quote_by_date.get(row.date)
+            if q is not None:
+                turnover_rate = q.turnover_rate
+                float_shares = q.float_shares
+                volume_ratio = q.volume_ratio
+            elif allow_legacy:
+                turnover_rate = getattr(row, "turnover_rate", None)
+                float_shares = getattr(row, "float_shares", None)
+                volume_ratio = row.volume_ratio
+            else:
+                turnover_rate = None
+                float_shares = None
+                volume_ratio = None
+            merged.append({
+                "date": row.date,
+                "open": row.open,
+                "high": row.high,
+                "low": row.low,
+                "close": row.close,
+                "volume": row.volume,
+                "amount": row.amount,
+                "pct_chg": row.pct_chg,
+                "turnover_rate": turnover_rate,
+                "float_shares": float_shares,
+                "volume_ratio": volume_ratio,
+            })
+        return merged
 
     def get_coverage(self, code: str) -> Dict[str, Any]:
         """查询某股票在 stock_daily 里已存的最早/最晚日期与条数。

@@ -230,15 +230,15 @@ python train_model.py --all --label-mode cross_section --algorithm lightgbm --na
         StockRankingService.get_recommendations  ← 轻活：读快照，毫秒级
           ├─ 全市场：默认每行业 ≤ industry_cap(=3) 做分散
           ├─ 行业内：industry=X 只在该行业排名
-          └─ 概率加权建议权重(∑=1) + 全体分位 rank_pct + 回测最优口径提示(strategy)
+          └─ 等权建议权重(∑=1) + 全体分位 rank_pct + 回测最优口径提示(strategy)
 ```
 
 设计要点：
 - **打分预计算、查询派生**：全市场打分很重，由后台/定时每日算一次落库；行业榜靠"过滤 + 组内重排"从同一份快照秒级派生。
 - **剔除 ST**：快照计算默认剔除名称含 `ST` 的退市风险股（与回测口径一致）。
 - **行业分散上限**：全市场推荐时每行业最多 `industry_cap` 只，避免单一板块霸榜；选具体行业时该上限不生效。
-- **建议权重**：概率加权（`clip(强度 - 全体中位, 0, None)` 归一），可直接当一篮子买入比例。
-- **回测最优口径提示**：响应 `strategy` 字段固化 walk-forward 选出的最优交易口径（双周·概率加权·行业≤3），指导"清单怎么落到实盘"。
+- **建议权重**：等权（入选每只票 `1/N`），可直接当一篮子买入比例。长周期回测（2020–2026）显示等权稳定优于概率加权（概率加权的优势仅存在于 2024–2026 短窗，跨多状态后消失），故线上口径与回测最优保持一致。
+- **回测最优口径提示**：响应 `strategy` 字段固化长周期回测选出的最优交易口径（双周·等权·缓冲·行业≤3），指导"清单怎么落到实盘"。详见 [backtest-report-2018.md](backtest-report-2018.md)。
 
 数据表 `stock_rank_snapshot`（`src/storage.py` → `StockRankSnapshot`）关键列：`as_of_date, code, stock_name, industry, strength_score, last_close, model_name, model_version`，唯一约束 `(as_of_date, code)`，索引 `(as_of_date, industry)`。
 
