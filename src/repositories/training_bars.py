@@ -7,6 +7,11 @@
   - quote：stock_daily_quote，含估值/真实价 OHLC
   - auto：优先 kline，无数据时回退 quote
   - merged：kline OHLCV + quote 估值列 LEFT JOIN（需两表均有数据）
+
+数据质量（训练必读）：
+  stock_daily_kline.turnover_rate 来自 westock kline 的 exchange 字段。
+  2016–2017 全为 0，2018 起逐步有值，2019+ 较完整——是腾讯接口历史覆盖问题，
+  不是回填丢失。训练时 turnover_norm/turnover_rel 在老区间等效于缺失（build_features 填 0）。
 """
 
 from __future__ import annotations

@@ -189,6 +189,8 @@ train(symbols, lookback_days, label_mode, algorithm, horizon, train_end, ...)
    - 换手率：绝对换手、相对 20 日均值（数据源直供，含流通盘信息）
    - 大盘/环境：指数 MA20 偏离/动量/RSI/波动率、相对大盘强弱(5/20 日)——传入 `market_df`，缺失时中性填 0
    > 扩展特征（换手率、大盘环境）整列缺失时以 0 中性填充，避免 dropna 把整只票样本清空。
+   >
+   > **kline 回填换手覆盖（`TRAIN_BAR_SOURCE=kline`）**：`stock_daily_kline.turnover_rate` 映射 westock kline 的 `exchange` 字段。实测 2016–2017 常为 **0**（非丢失，腾讯历史 K 线未给换手），2018 起部分有值，**2019+ 较完整**。长周期训练（如 2015 起）时 `turnover_norm` / `turnover_rel` 在老区间等效缺失，勿当作真实换手；OHLCV 仍可用。
 3. **模型选择**：
    - `use_saved_model=True` 且存在激活模型 → `_load_active_model` 加载推理（`model.source = "trained"`），**校验特征口径一致**，不一致则退回。
    - 否则退回**实时训练**（`model.source = "on_the_fly"`，保持旧行为，功能不中断）。

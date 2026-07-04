@@ -83,6 +83,8 @@ FEATURE_ORDER = list(FEATURE_LABELS.keys())
 # 数据源/入参可能不提供的扩展特征：整列缺失时以 0(中性)填充，
 # 避免这些列的 NaN 把整只股票的样本在 dropna 时清空
 # （兼容无换手率的兜底源，以及未传入 market_df 的调用方）。
+# 注意：westock kline 回填的 turnover_rate 在 2016–2017 常为 0（源接口 exchange 未填），
+# 2018 起逐步有值；老样本上 turnover_norm/turnover_rel 不应解读为真实换手。
 _MARKET_FEATURES = (
     "mkt_ma20_dev", "mkt_momentum_20", "mkt_rsi_14", "mkt_volatility_20",
     "rel_strength_5", "rel_strength_20",

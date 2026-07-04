@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [文档] 补充 kline 回填 `turnover_rate` 历史覆盖说明（westock 2016–2017 常为 0，训练时换手因子在老区间等效缺失）：`执行kline.md`、`docs/prediction-architecture.md`、`training_bars.py`、`prediction_service.py`。
 - [新功能] 新增横截面选股与主动推荐：`stock_rank_snapshot` 强弱榜快照表、`StockRankingService`（全市场预计算 + 行业/全市推荐、剔除 ST、行业分散上限、概率加权建议权重）、`rank_snapshot.py` 预计算 CLI（支持定时）、`GET /prediction/recommendations` 与 `GET /prediction/industries` 接口、前端「选股推荐」页面（`/recommendations`）。
 - [新功能] 新增周度 Top-N 回测脚本 `scripts/weekly_topn_backtest.py`（周一开盘买/周五收盘卖，两阶段结构，支持调仓频率与行业分散上限多口径对比，剔除 ST、扣成本、防未来函数）。
 - [文档] 更新 `docs/prediction-architecture.md` 训练/预测/打分口径（标签模式、LightGBM、全局时序切分+embargo、约30个特征、横截面选股与推荐、CLI/接口）；新增 `docs/backtest-methodology.md` 回测方法论；`docs/INDEX.md` 挂载新文档。

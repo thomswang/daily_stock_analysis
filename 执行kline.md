@@ -112,3 +112,4 @@ python backfill.py kline --all --mode range --start 2015-01-01 --end 2016-12-31 
 - 6 进程同时写 `stock_analysis.db`，偶发 `database is locked` 属正常；失败项用 `--retry-failed` 补跑即可。
 - kline 与 quote 不同：**整段 1 次 node 请求/股/段**，默认不限流；quote 逐日才需要 `--sleep 0.1`。
 - 训练默认读 kline：`export TRAIN_BAR_SOURCE=kline`（与 quote 表分离）。
+- **`turnover_rate` 历史覆盖**：westock kline 的 `exchange`（换手%）在 **2016–2017 常为 0**，2018 起逐步有值，2019+ 较完整；落库如实存 0，不是回填 bug。长周期训练时换手因子在老区间等效缺失（`build_features` 填 0），详见 `docs/prediction-architecture.md`。
