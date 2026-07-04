@@ -23,11 +23,13 @@ from api.v1.schemas.prediction import (
     PredictionBacktestResponse,
     PredictionEvaluateRequest,
     PredictionEvaluateResponse,
+    IndustriesResponse,
     PredictionHistoryResponse,
     PredictionRequest,
     PredictionResponse,
     RankRequest,
     RankResponse,
+    RecommendationsResponse,
 )
 from src.services.prediction_service import PredictionError, predict_stock, rank_stocks
 
@@ -132,6 +134,57 @@ def prediction_rank(request: RankRequest) -> RankResponse:
             status_code=500,
             detail={"error": "internal_error", "message": f"选股打分失败: {str(exc)}"},
         )
+
+
+@router.get(
+    "/recommendations",
+    response_model=RecommendationsResponse,
+    responses={
+        200: {"description": "查询成功"},
+        400: {"description": "暂无快照或参数错误", "model": ErrorResponse},
+    },
+    summary="选股推荐（横截面强弱榜）",
+    description=(
+        "系统主动推荐：读取当日全市场强弱打分快照，返回最强的前 N 只及概率加权建议权重。"
+        "不传 industry=全市场榜（默认每行业≤3只做分散）；传 industry=该行业内排名。"
+        "响应含 strategy 字段给出回测最优的调仓口径(双周·概率加权·行业≤3)。"
+        "数据由后台预计算，秒级返回。强弱为相对排序，不构成投资建议。"
+    ),
+)
+def prediction_recommendations(
+    industry: Optional[str] = Query(None, description="按行业筛选；留空=全市场"),
+    top_n: int = Query(20, ge=1, le=200, description="返回前 N 强"),
+    industry_cap: Optional[int] = Query(
+        3, ge=1, le=50, description="全市场推荐时每个行业最多几只(分散抗扎堆)；行业查询时忽略"
+    ),
+) -> RecommendationsResponse:
+    from src.services.stock_ranking_service import StockRankingError, StockRankingService
+
+    try:
+        result = StockRankingService().get_recommendations(
+            industry=industry, top_n=top_n, industry_cap=industry_cap
+        )
+        return RecommendationsResponse(**result)
+    except StockRankingError as exc:
+        raise HTTPException(status_code=400, detail={"error": "no_snapshot", "message": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"选股推荐失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"选股推荐失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/industries",
+    response_model=IndustriesResponse,
+    summary="可选行业清单",
+    description="当日强弱榜覆盖的行业清单及各行业股票数，供行业筛选下拉。",
+)
+def prediction_industries() -> IndustriesResponse:
+    from src.services.stock_ranking_service import StockRankingService
+
+    return IndustriesResponse(**StockRankingService().list_industries())
 
 
 @router.get(

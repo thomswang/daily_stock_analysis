@@ -18,6 +18,7 @@
 - 默认稳定性优先于“顺手优化”；非当前任务直接需要的重构、抽象和基础设施迁移一律克制。
 - 新增配置项时，必须同步更新 `.env.example` 和相关文档。
 - 涉及用户可见能力、CLI/API 行为、部署方式、通知方式、报告结构变化时，必须同步更新相关文档与 `docs/CHANGELOG.md`。
+- 涉及模型训练、特征工程、标签口径、预测/打分、回测方法或选股策略逻辑变化时（典型文件：`src/services/model_training_service.py`、`src/services/prediction_service.py`、`src/services/stock_ranking_service.py`、`src/services/prediction_backtest_service.py`、`scripts/*backtest*.py`、`train_model.py`、`rank_snapshot.py`），必须同步更新 `docs/prediction-architecture.md`（训练/预测/打分口径）与 `docs/backtest-methodology.md`（回测方法论），并在 `docs/CHANGELOG.md` 追加条目。改动后确保文档中的**特征清单、标签定义、切分/防泄露口径、算法与超参、评估指标、回测规则、CLI/接口参数**与代码一致，避免 AI 依据过期文档产生误判。
 - 修改报告格式、报告渲染效果或 Web UI 界面时，PR 描述必须附受影响报告 / 页面截图；涉及前后差异时优先附前后对比，无法截图时说明原因与替代可视证据。
 - Issue / PR 过程截图、审查截图、一次性验收截图和临时可视证据不得作为仓库文件合入；应放在 PR 描述、PR 评论、GitHub 附件、Actions artifact 或外部可访问证据链接中。产品长期文档确需保留的示意图除外，但文件名和文档语义必须脱离具体 issue / PR 编号。
 - `docs/CHANGELOG.md` 的 `[Unreleased]` 段使用**扁平格式**：每条独立一行，格式为 `- [类型] 描述`，类型取值：`新功能`/`改进`/`修复`/`文档`/`测试`/`chore`；**禁止在 `[Unreleased]` 内新增 `### 类目标题`**，以减少并发 PR 的 merge 冲突。发版时由 maintainer 汇总整理成带标题的正式格式。

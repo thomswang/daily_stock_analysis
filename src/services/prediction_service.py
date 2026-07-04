@@ -1136,6 +1136,81 @@ def predict_stock(
 DEFAULT_RANK_MODEL = "trend_xsec"
 
 
+def load_ranking_model(model_name: str = DEFAULT_RANK_MODEL):
+    """加载已激活的横截面打分模型，返回 (model, record)；无则抛 PredictionError。"""
+    loaded = _load_active_model(model_name)
+    if loaded is None:
+        raise PredictionError(
+            f"未找到已激活的横截面模型 {model_name}；请先运行 "
+            f"train_model.py --all --label-mode cross_section --algorithm lightgbm --name {model_name}"
+        )
+    return loaded
+
+
+def score_codes(
+    codes: List[str],
+    *,
+    model,
+    market_df: Optional[pd.DataFrame] = None,
+    lookback_days: int = 250,
+    resolve_name: bool = True,
+    refresh: bool = True,
+) -> List[Dict[str, Any]]:
+    """给一批股票逐票打「强弱分」(单票最新特征喂横截面模型)。
+
+    纯打分、不排序不加权(排序/分位/权重由调用方按其票池口径计算)，供
+    rank_stocks 与选股推荐服务共用。单票失败自动跳过、不中断整批。
+
+    refresh=False 时仅用本地缓存(全市场扫描必用，避免上千次联网)。
+
+    Returns: [{code, stock_name, strength_score, last_close, as_of_date}, ...]
+    """
+    if market_df is None:
+        market_df = load_market_df()
+    out: List[Dict[str, Any]] = []
+    for raw in codes:
+        code = (raw or "").strip()
+        if not code:
+            continue
+        try:
+            df, name = _load_daily_df(code, lookback_days, refresh=refresh, resolve_name=resolve_name)
+            if df is None or df.empty:
+                continue
+            feats = build_features(df, market_df=market_df)
+            if feats.empty:
+                continue
+            latest = feats.iloc[-1]
+            x = latest[FEATURE_ORDER].to_numpy(dtype=float)
+            out.append({
+                "code": code,
+                "stock_name": name,
+                "strength_score": round(float(model.predict_proba(x)[0]), 4),
+                "last_close": round(float(latest["close"]), 4),
+                "as_of_date": str(latest["date"])[:10],
+            })
+        except PredictionError as exc:
+            logger.info("[score] 跳过 %s：%s", code, exc)
+        except Exception as exc:  # noqa: BLE001 - 单票失败不应中断整批
+            logger.warning("[score] %s 打分异常，跳过：%s", code, exc)
+    return out
+
+
+def attach_ranking(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """在给定票池内计算横截面分位排名 + 概率加权多头建议权重(∑=1)，就地补字段并按强→弱排序。"""
+    if not items:
+        return items
+    s = np.array([it["strength_score"] for it in items], dtype=float)
+    pct = pd.Series(s).rank(pct=True, method="average").to_numpy()
+    pos = np.clip(pct - pct.mean(), 0.0, None)
+    w = pos / (pos.sum() or 1.0)
+    order = np.argsort(-s)
+    for rank_i, idx in enumerate(order, start=1):
+        items[idx]["rank"] = rank_i
+        items[idx]["rank_pct"] = round(float(pct[idx]), 4)
+        items[idx]["suggested_weight"] = round(float(w[idx]), 4)
+    return [items[i] for i in order]
+
+
 def rank_stocks(
     codes: List[str],
     *,
@@ -1170,56 +1245,13 @@ def rank_stocks(
     if not codes:
         raise PredictionError("待打分的股票列表为空")
 
-    loaded = _load_active_model(model_name)
-    if loaded is None:
-        raise PredictionError(
-            f"未找到已激活的横截面模型 {model_name}；请先运行 "
-            f"train_model.py --all --label-mode cross_section --algorithm lightgbm --name {model_name}"
-        )
-    model, record = loaded
-    market_df = load_market_df()
-
-    scored: List[Dict[str, Any]] = []
-    for code in codes:
-        try:
-            df, name = _load_daily_df(code, lookback_days, resolve_name=True)
-            if df is None or df.empty:
-                continue
-            feats = build_features(df, market_df=market_df)
-            if feats.empty:
-                continue
-            latest = feats.iloc[-1]
-            x = latest[FEATURE_ORDER].to_numpy(dtype=float)
-            score = float(model.predict_proba(x)[0])
-            scored.append({
-                "code": code,
-                "stock_name": name,
-                "strength_score": round(score, 4),
-                "last_close": round(float(latest["close"]), 4),
-                "as_of_date": str(latest["date"])[:10],
-            })
-        except PredictionError as exc:
-            logger.info("[rank] 跳过 %s：%s", code, exc)
-        except Exception as exc:  # noqa: BLE001 - 单票失败不应中断整批打分
-            logger.warning("[rank] %s 打分异常，跳过：%s", code, exc)
-
+    model, record = load_ranking_model(model_name)
+    scored = score_codes(codes, model=model, lookback_days=lookback_days)
     if not scored:
         raise PredictionError("所有股票均无足够数据完成打分；请检查代码或稍后重试")
 
-    # 横截面分位排名 + 概率加权多头建议权重(去均值后取正、归一，∑=1)
     n = len(scored)
-    s = np.array([it["strength_score"] for it in scored], dtype=float)
-    pct = pd.Series(s).rank(pct=True, method="average").to_numpy()  # (0,1]
-    centered = pct - pct.mean()
-    pos = np.clip(centered, 0.0, None)
-    w = pos / (pos.sum() or 1.0)
-    order = np.argsort(-s)  # 强→弱
-    for rank_i, idx in enumerate(order, start=1):
-        scored[idx]["rank"] = rank_i
-        scored[idx]["rank_pct"] = round(float(pct[idx]), 4)
-        scored[idx]["suggested_weight"] = round(float(w[idx]), 4)
-
-    items = [scored[i] for i in order]
+    items = attach_ranking(scored)
     if top_n is not None and top_n > 0:
         items = items[:top_n]
 

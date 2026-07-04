@@ -210,6 +210,48 @@ class StockIndustry(Base):
         return f"<StockIndustry(code={self.code}, industry={self.industry}, as_of={self.as_of_date})>"
 
 
+class StockRankSnapshot(Base):
+    """
+    全市场横截面「强弱打分」快照（每日预计算，供主动选股推荐）
+
+    设计取舍：给全市场每只票打分是重活（需逐票构造特征 + 模型推理），不宜放在
+    用户请求链路里实时算。故由后台任务每日预计算一次、落这张表；查询时只需
+    读快照 + 按行业过滤 + 组内重排，毫秒级返回。行业冗余存一列，行业榜免联表。
+
+    一行 = 某只票在某个打分日的强弱分。
+    """
+    __tablename__ = 'stock_rank_snapshot'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 打分对应的行情日期（特征取到的最新交易日）
+    as_of_date = Column(Date, nullable=False, index=True)
+    # 股票代码（与 stock_daily.code 同口径）
+    code = Column(String(10), nullable=False, index=True)
+    stock_name = Column(String(64))
+    # 冗余存所属行业，做行业榜时免联表（打分时从行业映射带入）
+    industry = Column(String(64), index=True)
+
+    # 强弱分 0~1：属当日全市场强势前 50% 的概率（越高越强）
+    strength_score = Column(Float, nullable=False)
+    last_close = Column(Float)
+
+    # 打分所用模型（可追溯）
+    model_name = Column(String(32))
+    model_version = Column(String(32))
+
+    created_at = Column(DateTime, default=datetime.now)
+
+    # 同一票同一打分日只保留一条
+    __table_args__ = (
+        UniqueConstraint('as_of_date', 'code', name='uix_rank_date_code'),
+        Index('ix_rank_date_industry', 'as_of_date', 'industry'),
+    )
+
+    def __repr__(self):
+        return f"<StockRankSnapshot(code={self.code}, score={self.strength_score}, as_of={self.as_of_date})>"
+
+
 class NewsIntel(Base):
     """
     新闻情报数据模型

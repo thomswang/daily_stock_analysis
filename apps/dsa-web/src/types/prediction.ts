@@ -159,6 +159,56 @@ export interface PredictionBacktestResponse {
   disclaimer: string;
 }
 
+// ============ Stock recommendations (cross-sectional strength board) ============
+
+export interface RecommendationItem {
+  code: string;
+  stockName: string | null;
+  industry: string | null;
+  strengthScore: number;
+  rank: number;
+  rankPct: number;
+  suggestedWeight: number;
+  lastClose: number | null;
+}
+
+export interface StrategyHint {
+  name: string;
+  rebalance: string;
+  weighting: string;
+  industryCap: number | null;
+  backtest: string | null;
+}
+
+export interface RecommendationsResponse {
+  scope: string;
+  industry: string | null;
+  asOfDate: string | null;
+  universeSize: number;
+  count: number;
+  industryCap: number | null;
+  strategy: StrategyHint | null;
+  items: RecommendationItem[];
+  disclaimer: string;
+}
+
+export interface IndustryOption {
+  industry: string;
+  count: number;
+}
+
+export interface IndustriesResponse {
+  asOfDate: string | null;
+  count: number;
+  industries: IndustryOption[];
+}
+
+export interface RecommendationsParams {
+  industry?: string;
+  topN?: number;
+  industryCap?: number | null;
+}
+
 export interface PredictionResponse {
   stockCode: string;
   stockName: string | null;

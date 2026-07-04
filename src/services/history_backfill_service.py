@@ -186,6 +186,32 @@ class HistoryBackfillService:
         logger.info("从 %s 载入 A 股代码 %d 只", path, len(uniq))
         return uniq
 
+    def load_cn_name_map(self, index_path: Optional[str] = None) -> Dict[str, str]:
+        """从 stocks.index.json 读取「代码 -> 名称」映射（A 股、已上市）。
+
+        供选股推荐等场景廉价补齐股票名（免逐票联网）。索引缺失时返回空 dict。
+        """
+        path = index_path or self._resolve_index_path()
+        if not path:
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                rows = json.load(f)
+        except Exception as exc:  # noqa: BLE001 - 名称是锦上添花
+            logger.debug("读取 stocks.index.json 名称映射失败：%s", exc)
+            return {}
+        name_map: Dict[str, str] = {}
+        for row in rows:
+            # 结构：[ts_code, plain, name, pinyin, abbr, [aliases], country, type, listed, weight]
+            if not isinstance(row, list) or len(row) < 8:
+                continue
+            ts_code, name = row[0], row[2] if len(row) > 2 else None
+            country = row[6] if len(row) > 6 else None
+            sec_type = row[7] if len(row) > 7 else None
+            if country == "CN" and sec_type == "stock" and ts_code and name:
+                name_map[str(ts_code).strip().upper()] = str(name).strip()
+        return name_map
+
     def _resolve_index_path(self) -> Optional[str]:
         for cand in _INDEX_CANDIDATES:
             if os.path.exists(cand):

@@ -201,6 +201,49 @@ class RankResponse(BaseModel):
     disclaimer: str
 
 
+class RecommendationItem(BaseModel):
+    code: str
+    stock_name: Optional[str] = None
+    industry: Optional[str] = None
+    strength_score: float = Field(..., description="强弱分 0~1(越高越强)")
+    rank: int = Field(..., description="所选范围内名次(1=最强)")
+    rank_pct: float = Field(..., description="强弱分位 0~1(所选范围内)")
+    suggested_weight: float = Field(..., description="组合建议权重(返回清单内∑=1)")
+    last_close: Optional[float] = None
+
+
+class StrategyHint(BaseModel):
+    """经回测选出的最优交易口径（供前端展示"怎么用这份清单"）。"""
+    name: str = Field(..., description="口径名，如 双周·概率加权·行业≤3")
+    rebalance: str = Field(..., description="调仓节奏，如 每2周(周一开盘)")
+    weighting: str = Field(..., description="权重方式，如 概率加权")
+    industry_cap: Optional[int] = Field(None, description="每个行业最多几只(全市场推荐时生效)")
+    backtest: Optional[str] = Field(None, description="回测口径表现摘要")
+
+
+class RecommendationsResponse(BaseModel):
+    scope: str = Field(..., description="推荐范围：全市场 或 行业名")
+    industry: Optional[str] = None
+    as_of_date: Optional[str] = None
+    universe_size: int = Field(..., description="所选范围内被打分的股票总数")
+    count: int
+    industry_cap: Optional[int] = Field(None, description="本次生效的行业分散上限(全市场时)")
+    strategy: Optional[StrategyHint] = Field(None, description="推荐的交易口径(回测最优)")
+    items: List[RecommendationItem] = Field(default_factory=list)
+    disclaimer: str
+
+
+class IndustryOption(BaseModel):
+    industry: str
+    count: int = Field(..., description="该行业当日被打分的股票数")
+
+
+class IndustriesResponse(BaseModel):
+    as_of_date: Optional[str] = None
+    count: int
+    industries: List[IndustryOption] = Field(default_factory=list)
+
+
 class PredictionResponse(BaseModel):
     stock_code: str
     stock_name: Optional[str] = None

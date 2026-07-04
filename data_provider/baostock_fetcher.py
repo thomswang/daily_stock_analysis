@@ -74,6 +74,9 @@ class BaostockFetcher(BaseFetcher):
     
     name = "BaostockFetcher"
     priority = int(os.getenv("BAOSTOCK_PRIORITY", "3"))
+    # 查询成功但零行=该股在该区间确无数据（如未上市），返回空而非报错，
+    # 避免这类“无数据”把熔断器打开、连累后续真有数据的股票。
+    allow_empty_daily_data = True
     
     def __init__(self):
         """初始化 BaostockFetcher"""
@@ -241,7 +244,11 @@ class BaostockFetcher(BaseFetcher):
                     data_list.append(rs.get_row_data())
                 
                 if not data_list:
-                    raise DataFetchError(f"Baostock 未查询到 {stock_code} 的数据")
+                    # 查询本身成功（error_code==0）但零行 → 该股在此区间确无数据
+                    # （如尚未上市/已退市）。返回空 DataFrame 交由上层判为“无数据”，
+                    # 不抛异常，避免误触发熔断连累后续股票。
+                    logger.info(f"Baostock 未查询到 {stock_code} 的数据（区间无记录，视为无数据）")
+                    return pd.DataFrame(columns=rs.fields)
                 
                 df = pd.DataFrame(data_list, columns=rs.fields)
                 

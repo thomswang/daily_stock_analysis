@@ -1,6 +1,7 @@
 import apiClient from './index';
 import { toCamelCase } from './utils';
 import type {
+  IndustriesResponse,
   PredictionAccuracyResponse,
   PredictionBacktestRequest,
   PredictionBacktestResponse,
@@ -9,6 +10,8 @@ import type {
   PredictionHistoryResponse,
   PredictionRequest,
   PredictionResponse,
+  RecommendationsParams,
+  RecommendationsResponse,
 } from '../types/prediction';
 
 export const predictionApi = {
@@ -81,5 +84,23 @@ export const predictionApi = {
       { timeout: 120000 },
     );
     return toCamelCase<PredictionBacktestResponse>(response.data);
+  },
+
+  /** System-generated stock picks (cross-sectional strength board, whole market or by industry). */
+  recommendations: async (params: RecommendationsParams = {}): Promise<RecommendationsResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/prediction/recommendations', {
+      params: {
+        industry: params.industry || undefined,
+        top_n: params.topN ?? 20,
+        industry_cap: params.industryCap === null ? undefined : (params.industryCap ?? 3),
+      },
+    });
+    return toCamelCase<RecommendationsResponse>(response.data);
+  },
+
+  /** Available industries in the latest ranking snapshot (for the industry dropdown). */
+  industries: async (): Promise<IndustriesResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/prediction/industries');
+    return toCamelCase<IndustriesResponse>(response.data);
   },
 };

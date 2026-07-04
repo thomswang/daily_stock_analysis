@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Activity, BarChart3, Bell, BriefcaseBusiness, FlaskConical, Gauge, History, Home, LineChart, LogOut, MessageSquareQuote, Search, Settings2 } from 'lucide-react';
+import { Activity, BarChart3, Bell, BriefcaseBusiness, FlaskConical, Gauge, History, Home, LineChart, LogOut, MessageSquareQuote, Search, Settings2, Trophy } from 'lucide-react';
 import { NavLink } from 'react-router-dom';
 import { ALPHASIFT_CONFIG_CHANGED_EVENT, SYSTEM_CONFIG_CHANGED_EVENT, alphasiftApi } from '../../api/alphasift';
 import { useAuth } from '../../contexts/AuthContext';
@@ -33,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: 'screening', labelKey: 'layout.nav.screening', to: '/screening', icon: Search },
   { key: 'portfolio', labelKey: 'layout.nav.portfolio', to: '/portfolio', icon: BriefcaseBusiness },
   { key: 'decision-signals', labelKey: 'layout.nav.decisionSignals', to: '/decision-signals', icon: Activity },
+  { key: 'recommendations', labelKey: 'layout.nav.recommendations', to: '/recommendations', icon: Trophy },
   { key: 'prediction', labelKey: 'layout.nav.prediction', to: '/prediction', icon: LineChart },
   { key: 'prediction-history', labelKey: 'layout.nav.predictionHistory', to: '/prediction/history', icon: History },
   { key: 'prediction-backtest', labelKey: 'layout.nav.predictionBacktest', to: '/prediction/backtest', icon: FlaskConical },
