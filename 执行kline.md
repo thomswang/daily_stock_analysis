@@ -56,7 +56,7 @@ python backfill.py kline --all --mode range --start 2025-01-01 --end 2026-07-03 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-python backfill.py kline --all --limit 20 --start 2024-01-01 --end 2024-12-31 --progress data/kline_progress_test.json --retry 2 --adj qfq
+python backfill.py kline --symbols 600519 --mode range --start 2026-07-01 --end 2026-07-03 --progress data/kline_progress_test.json --retry 2 --adj qfq
 ```
 
 ---

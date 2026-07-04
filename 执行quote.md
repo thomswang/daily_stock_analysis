@@ -12,12 +12,20 @@
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
-export WESTOCK_QUOTE_SLEEP=0.1
-export WESTOCK_QUOTE_BATCH=3
 ```
 
-> 两处限流均为 **0.1s**：`--sleep`（每只/每段后）+ `WESTOCK_QUOTE_SLEEP`（quote 分批间）。默认已是 0.1。
+westock CLI 已内置在 `.claude/skills/westock-data/`，**一般不必**再设 `WESTOCK_DATA_DIR`。
+若要用仓库外另一份 westock-data，再 `export WESTOCK_DATA_DIR=...` 覆盖。
+
+Quote 逐日拉取，默认需要限流（与 kline 不同）：
+
+| 参数 | 默认 | 作用 |
+|------|------|------|
+| `--sleep 0.1` | CLI 默认 | 每只股票/每段处理完后的间隔 |
+| `WESTOCK_QUOTE_SLEEP=0.1` | 内置默认 | 单股区间内，每批并发 quote 请求之间的间隔 |
+| `WESTOCK_QUOTE_BATCH=3` | 内置默认 | 每批并发的交易日数 |
+
+全量 6 终端并行时保持 `--sleep 0.1`；试跑单股可 `--sleep 0`。
 
 ---
 
@@ -29,7 +37,6 @@ export WESTOCK_QUOTE_BATCH=3
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
 python backfill.py quote --all --mode range --start 2021-01-01 --end 2021-12-31 --progress data/progress_2021.json --sleep 0.1 --retry 2
 ```
 
@@ -37,7 +44,6 @@ python backfill.py quote --all --mode range --start 2021-01-01 --end 2021-12-31 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
 python backfill.py quote --all --mode range --start 2022-01-01 --end 2022-12-31 --progress data/progress_2022.json --sleep 0.1 --retry 2
 ```
 
@@ -45,7 +51,6 @@ python backfill.py quote --all --mode range --start 2022-01-01 --end 2022-12-31 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
 python backfill.py quote --all --mode range --start 2023-01-01 --end 2023-12-31 --progress data/progress_2023.json --sleep 0.1 --retry 2
 ```
 
@@ -53,7 +58,6 @@ python backfill.py quote --all --mode range --start 2023-01-01 --end 2023-12-31 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
 python backfill.py quote --all --mode range --start 2024-01-01 --end 2024-12-31 --progress data/progress_2024.json --sleep 0.1 --retry 2
 ```
 
@@ -61,7 +65,6 @@ python backfill.py quote --all --mode range --start 2024-01-01 --end 2024-12-31 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
 python backfill.py quote --all --mode range --start 2025-01-01 --end 2025-12-31 --progress data/progress_2025.json --sleep 0.1 --retry 2
 ```
 
@@ -69,7 +72,6 @@ python backfill.py quote --all --mode range --start 2025-01-01 --end 2025-12-31 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
 python backfill.py quote --all --mode range --start 2026-01-01 --end 2026-07-03 --progress data/progress_2026.json --sleep 0.1 --retry 2
 ```
 
@@ -81,8 +83,7 @@ python backfill.py quote --all --mode range --start 2026-01-01 --end 2026-07-03 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill.py quote --all --limit 20 --start 2024-01-01 --progress data/progress_test.json --sleep 0.1 --retry 2
+python backfill.py quote --symbols 600519 --mode range --start 2026-07-01 --end 2026-07-03 --progress data/progress_test.json --sleep 0 --retry 2
 ```
 
 ---
