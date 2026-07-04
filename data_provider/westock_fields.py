@@ -2,8 +2,7 @@
 """
 westock-data/test/index.html FIELD_DICT 对齐的字段清单。
 
-K 线（Tencent fqkline / westock kline）：date, open, high, low, last, volume(手), amount, exchange
-Quote 截面（westock quote --date）：index.html「日K全字段」展示的全套键名。
+权威存储：stock_daily_quote（quote --date 逐日循环，一天 40+ 字段）。
 """
 
 from __future__ import annotations

@@ -4,11 +4,10 @@
 全历史日线数据回填 入口（CLI）
 =========================================
 
-数据写入两张表（腾讯专用，无跨平台 failover）：
-  - stock_daily        ← Tencent fqkline（OHLCV 时间序列）
-  - stock_daily_quote  ← Tencent quote --date（截面：换手率、流通股本等）
+数据写入单表 stock_daily_quote（westock quote --date，与 test/index.html 日K全字段一致）：
+  按每个工作日循环请求，一天一行、40+ 字段。
 
-默认 --layer all 一次跑 K 线 + quote；也可分层、分进程并行以提高效率。
+默认 --layer quote（all/kline 已废弃，会自动按 quote 执行）。
 
 ────────────────────────────────────────────────────────────
 一、单进程常用命令
@@ -22,105 +21,19 @@
 
   # 只补自选股 / 指定代码
   python backfill_history.py --from-watchlist
-  python backfill_history.py --symbols 600519,000001,00700
+  python backfill_history.py --symbols 600519,000001
 
-  # 从文件读代码（每行一个，或逗号分隔）
-  python backfill_history.py --codes-file my_codes.txt
-
-  # 渐进式建库（推荐）：先拉近两年，以后把 start 往前推
+  # 渐进式建库：先拉近两年，以后把 start 往前推
   python backfill_history.py --all --mode smart --start 2024-07-01
-  python backfill_history.py --all --mode smart --start 2020-07-01
 
   # 日常增量：只补每只票缺的最新一段
   python backfill_history.py --all --mode incremental
 
-  # 只重试之前失败的
-  python backfill_history.py --all --retry-failed
+  # 多进程按年份分片（每进程独立 --progress）
+  python backfill_history.py --all --mode range --start 2020-01-01 --end 2022-12-31 \\
+    --progress data/quote_2020_2022.json --sleep 0.3
 
-  # 查看进度台账
-  python backfill_history.py --progress-status
-
-  # 每日定时增量（后台常驻）
-  python backfill_history.py --all --mode incremental --schedule 17:30
-
-────────────────────────────────────────────────────────────
-二、分层回填（K 线与 quote 解耦）
-────────────────────────────────────────────────────────────
-
-  # 只拉 K 线 → stock_daily
-  python backfill_history.py --all --layer kline --start 2010-01-01
-
-  # 只拉 quote 截面（换手率等）→ stock_daily_quote
-  python backfill_history.py --all --layer quote --start 2010-01-01
-
-  # 两层都拉（默认，与不加 --layer 等价）
-  python backfill_history.py --all --layer all --start 2010-01-01
-
-  典型流程：先开进程 A 快速灌 K 线，再开进程 B 慢慢补 quote（或两者同时跑）。
-
-────────────────────────────────────────────────────────────
-三、多进程并行（按时间段分片）
-────────────────────────────────────────────────────────────
-
-  用 --mode range 精确拉 [start, end]，不受 DB 已有数据“已最新”影响；
-  每个进程必须用**独立** --progress 台账，避免互相覆盖断点记录。
-
-  【示例 1】两个终端并行拉 K 线，各负责一段年份：
-
-    # 终端 A
-    python backfill_history.py --all --layer kline --mode range \\
-      --start 2018-01-01 --end 2019-12-31 \\
-      --progress data/kline_2018_2019.json
-
-    # 终端 B
-    python backfill_history.py --all --layer kline --mode range \\
-      --start 2020-01-01 --end 2021-12-31 \\
-      --progress data/kline_2020_2021.json
-
-  【示例 2】K 线与 quote 同时跑（写不同表，效率最高）：
-
-    # 终端 A：K 线全区间
-    python backfill_history.py --all --layer kline --mode range \\
-      --start 2018-01-01 --end 2024-12-31 \\
-      --progress data/kline_full.json
-
-    # 终端 B：quote 2018-2020
-    python backfill_history.py --all --layer quote --mode range \\
-      --start 2018-01-01 --end 2020-12-31 \\
-      --progress data/quote_2018_2020.json --sleep 0.3
-
-    # 终端 C：quote 2021-2024
-    python backfill_history.py --all --layer quote --mode range \\
-      --start 2021-01-01 --end 2024-12-31 \\
-      --progress data/quote_2021_2024.json --sleep 0.3
-
-  【示例 3】按股票代码拆分（把全市场 codes 拆成两个文件）：
-
-    python backfill_history.py --codes-file codes_a.txt --layer kline \\
-      --mode range --start 2010-01-01 --progress data/kline_batch_a.json
-
-    python backfill_history.py --codes-file codes_b.txt --layer kline \\
-      --mode range --start 2010-01-01 --progress data/kline_batch_b.json
-
-────────────────────────────────────────────────────────────
-四、模式说明
-────────────────────────────────────────────────────────────
-
-  full         整段拉；若 DB 已够新则跳过（适合单进程首次建库）
-  incremental  只补 [last+1, end] 最新缺口（日常维护）
-  smart        按 DB 覆盖自动补前后缺口（渐进式扩历史）
-  range        精确拉 [start, end]，不跳过（多进程分片专用）
-
-────────────────────────────────────────────────────────────
-五、并行注意事项
-────────────────────────────────────────────────────────────
-
-  1. 每个进程独立 --progress 文件（必须）
-  2. K 线进程 + quote 进程可并行（不同表，推荐）
-  3. 同表多进程写 SQLite 可能偶发 database is locked；时间段/代码不重叠时
-     通常可接受，或降低并发数 / 换 PostgreSQL
-  4. quote 比 K 线慢很多（逐日请求），--sleep 可调小至 0.2~0.3
-  5. 环境变量 WESTOCK_DATA_DIR 需指向 westock-data 目录（quote 层依赖）
+  # 环境变量 WESTOCK_DATA_DIR 需指向 westock-data 目录
 
 ⚠ 数据仅供技术研究，不构成任何投资建议。
 """
@@ -263,8 +176,8 @@ def parse_args() -> argparse.Namespace:
         help="full=整段拉；incremental=只补最新缺口；smart=按覆盖补缺口；range=精确区间（多进程分片）",
     )
     parser.add_argument(
-        "--layer", type=str, choices=["all", "kline", "quote"], default="all",
-        help="all=K线+quote；kline=仅 stock_daily；quote=仅 stock_daily_quote",
+        "--layer", type=str, choices=["all", "kline", "quote"], default="quote",
+        help="quote=westock quote --date 单表（默认）；all/kline 已废弃，等同 quote",
     )
     # 续传/容错/限流
     parser.add_argument("--fresh-days", type=int, default=4, help="DB 最新日期距今≤该天数则视为已最新并跳过（默认 4）")
@@ -284,7 +197,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _print_summary(stats: dict, layer: str = "all") -> None:
+def _print_summary(stats: dict, layer: str = "quote") -> None:
     print("\n===== 回填完成 =====")
     print(f"layer:    {layer}")
     print(f"计划总数: {stats['total']}")
@@ -292,10 +205,7 @@ def _print_summary(stats: dict, layer: str = "all") -> None:
     print(f"跳过(已最新): {stats['skipped']}")
     print(f"返回为空: {stats['empty']}")
     print(f"失败:     {stats['failed']}")
-    if layer in ("all", "kline"):
-        print(f"新增 K 线行数: {stats['rows_added']}")
-    if layer in ("all", "quote"):
-        print(f"quote 截面: {stats.get('quote_rows', 0)} 行")
+    print(f"新增 quote 行: {stats.get('quote_rows', stats.get('rows_added', 0))}")
     print("====================\n")
 
 

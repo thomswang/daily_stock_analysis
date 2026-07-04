@@ -69,7 +69,7 @@
 </head>
 <body>
   <h1>行情数据验证</h1>
-  <p class="sub">Tencent fqkline（K线）+ westock quote --date（截面全字段）→ 对比 SQLite 已存数据</p>
+  <p class="sub">westock quote --date（与 test/index.html 日K全字段同源）→ stock_daily_quote 单表</p>
 
   <div class="bar">
     <div>
@@ -211,32 +211,20 @@
         ? '<div class="badge err" style="margin-bottom:12px">' + data.errors.map(esc).join(' · ') + '</div>'
         : '';
 
-      const kLive = data.kline_live?.fields || {};
-      const qLive = data.quote_live?.fields || data.quote_live?.raw_json || {};
-      const qLiveFlat = data.quote_live?.fields || {};
-      const kDb = stripMeta(data.kline_db);
+      const qLive = data.quote_live?.fields || {};
       const qDb = stripMeta(data.quote_db);
-
-      const compareKeys = ['open','high','low','last','volume','amount','turnover_rate','change','change_percent','price'];
 
       document.getElementById('content').innerHTML = `
         <div class="tabs">
-          <button class="tab active" onclick="switchTab(event,'kline')">K线 实时</button>
-          <button class="tab" onclick="switchTab(event,'quote')">quote 实时 (${Object.keys(qLiveFlat).length} 字段)</button>
-          <button class="tab" onclick="switchTab(event,'dbk')">DB K线</button>
+          <button class="tab active" onclick="switchTab(event,'quote')">quote 实时 (${Object.keys(qLive).length} 字段)</button>
           <button class="tab" onclick="switchTab(event,'dbq')">DB quote</button>
           <button class="tab" onclick="switchTab(event,'cmp')">实时 vs DB</button>
           <button class="tab" onclick="switchTab(event,'raw')">quote raw JSON</button>
         </div>
-        <div id="p-kline" class="panel active">${renderCards(kLive)}</div>
-        <div id="p-quote" class="panel">${renderCards(qLiveFlat)}</div>
-        <div id="p-dbk" class="panel">${Object.keys(kDb).length ? renderCards(kDb) : '<div class="empty-state">库中无 K 线（可点「拉取并入库」）</div>'}</div>
-        <div id="p-dbq" class="panel">${Object.keys(qDb).length ? renderCards(qDb) : '<div class="empty-state">库中无 quote</div>'}</div>
+        <div id="p-quote" class="panel active">${renderCards(qLive)}</div>
+        <div id="p-dbq" class="panel">${Object.keys(qDb).length ? renderCards(qDb) : '<div class="empty-state">库中无数据（可点「拉取并入库」）</div>'}</div>
         <div id="p-cmp" class="panel">
-          <h3 style="margin:12px 0 8px;font-size:0.9rem">K线字段</h3>
-          ${renderCompare(kLive, kDb, ['open','high','low','last','volume','amount','exchange'])}
-          <h3 style="margin:16px 0 8px;font-size:0.9rem">quote 核心字段</h3>
-          ${renderCompare(qLiveFlat, qDb, ['price','change','change_percent','turnover_rate','volume','float_shares','pe_ratio','pb_ratio'])}
+          ${renderCompare(qLive, qDb, ['price','open','high','low','volume','amount','turnover_rate','change','change_percent','float_shares','pe_ratio','pb_ratio'])}
         </div>
         <div id="p-raw" class="panel"><pre class="raw">${esc(JSON.stringify(data.quote_live?.raw_json || {}, null, 2))}</pre></div>
       `;

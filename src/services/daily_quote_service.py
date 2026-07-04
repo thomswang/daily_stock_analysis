@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-行情截面采集（quote --date → stock_daily_quote）。
+行情截面采集（quote --date → stock_daily_quote 单表）。
 
-由 DailyIngestService 在回填流程中调用；无独立 CLI。
+与 westock-data/test/index.html「日K全字段」相同：按工作日循环拉取。
 """
 
 from __future__ import annotations

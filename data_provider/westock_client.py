@@ -199,6 +199,9 @@ def parse_quote_snapshot(
             record["date"] = parsed
 
     record["raw_json"] = json.dumps(raw, ensure_ascii=False, default=str)
+    # 训练/读库兼容：westock 截面收盘价字段为 price
+    if record.get("last") is None and record.get("price") is not None:
+        record["last"] = record["price"]
     return record
 
 

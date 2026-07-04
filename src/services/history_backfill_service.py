@@ -350,9 +350,9 @@ class HistoryBackfillService:
         ledger.save()
         logger.info(
             "回填结束 [%s]：拉取 %d / 跳过 %d / 失败 %d / 空 %d，"
-            "新增 K 线 %d，quote 截面 %d，台账：%s",
+            "新增 quote 行 %d，台账：%s",
             layer, stats["fetched"], stats["skipped"], stats["failed"],
-            stats["empty"], stats["rows_added"], stats["quote_rows"], progress_path,
+            stats["empty"], stats["quote_rows"], progress_path,
         )
         return stats
 
@@ -362,19 +362,12 @@ class HistoryBackfillService:
         min_attempted: Optional[date] = None,
     ) -> Dict[str, Any]:
         """处理单只股票，返回 {action, ...}。action ∈ skipped/fetched/empty/failed。"""
-        if layer == "quote":
-            return self._backfill_quote_only(
-                code, start_d=start_d, end_d=end_d, mode=mode,
-                retry=retry, fresh_days=fresh_days, force=force, sleep=sleep,
-                min_attempted=min_attempted,
+        if layer in ("all", "kline"):
+            logger.warning(
+                "layer=%s 已废弃，统一使用 quote --date 单表；按 quote 执行 %s",
+                layer, code,
             )
-        if layer == "kline":
-            return self._backfill_kline_only(
-                code, start_d=start_d, end_d=end_d, mode=mode,
-                retry=retry, fresh_days=fresh_days, force=force, sleep=sleep,
-                min_attempted=min_attempted,
-            )
-        return self._backfill_all_layers(
+        return self._backfill_quote_only(
             code, start_d=start_d, end_d=end_d, mode=mode,
             retry=retry, fresh_days=fresh_days, force=force, sleep=sleep,
             min_attempted=min_attempted,
@@ -462,9 +455,12 @@ class HistoryBackfillService:
 
         cov2 = self.repo.get_quote_coverage(code)
         return {
-            "action": "fetched", "added": 0,
-            "first": cov2.get("first"), "last": cov2.get("last"),
-            "rows": cov2.get("rows"), "source": "TencentQuote",
+            "action": "fetched",
+            "added": total_quote,
+            "first": cov2.get("first"),
+            "last": cov2.get("last"),
+            "rows": cov2.get("rows"),
+            "source": "TencentQuote",
             "quote_rows": total_quote,
         }
 

@@ -203,10 +203,7 @@ class StockRepository:
         start_date: date,
         end_date: date,
     ) -> List[Dict[str, Any]]:
-        """K 线 + quote 截面 join（按 date 对齐，供训练/特征工程）。
-
-        换手率 / 流通股本 / 量比 权威源：stock_daily_quote。
-        """
+        """quote 单表按 date 读取（westock 全字段）。"""
         df = self.load_merged_df(code, start_date, end_date)
         if df.empty:
             return []
@@ -218,7 +215,7 @@ class StockRepository:
         start_date: date,
         end_date: date,
     ) -> pd.DataFrame:
-        """单票 K 线 + quote 一次 JOIN 查询（训练/预测读缓存）。"""
+        """单票读 stock_daily_quote（训练暂用，后续可改）。"""
         bulk = self.load_merged_bulk(
             [code], start_date, end_date, batch_size=1,
         )
@@ -232,9 +229,9 @@ class StockRepository:
         *,
         batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
     ) -> Dict[str, pd.DataFrame]:
-        """批量 K 线 LEFT JOIN quote，按 code 返回 DataFrame（训练预加载专用）。
+        """批量读 stock_daily_quote（单表；训练预加载暂用，后续可改专用 API）。
 
-        一次 SQL 拉一批股票，避免「每票 2 次 ORM 查询」的 N+1 问题。
+        OHLC 来自 quote；close = coalesce(last, price)。
         """
         norm_codes = _normalize_codes(codes)
         if not norm_codes:
@@ -248,66 +245,52 @@ class StockRepository:
                 for i in range(0, len(norm_codes), batch_size):
                     batch = norm_codes[i : i + batch_size]
                     stmt = (
-                        select(
-                            StockDaily.code.label("code"),
-                            StockDaily.date.label("date"),
-                            StockDaily.open,
-                            StockDaily.high,
-                            StockDaily.low,
-                            StockDaily.last,
-                            StockDaily.volume,
-                            StockDaily.amount,
-                            StockDaily.exchange,
-                            StockDailyQuote.turnover_rate,
-                            StockDailyQuote.float_shares,
-                            StockDailyQuote.volume_ratio,
-                            StockDailyQuote.change,
-                            StockDailyQuote.change_percent,
-                        )
-                        .select_from(StockDaily)
-                        .outerjoin(
-                            StockDailyQuote,
-                            and_(
-                                StockDaily.code == StockDailyQuote.code,
-                                StockDaily.date == StockDailyQuote.date,
-                            ),
-                        )
+                        select(StockDailyQuote)
                         .where(
-                            StockDaily.code.in_(batch),
-                            StockDaily.date >= start_date,
-                            StockDaily.date <= end_date,
+                            StockDailyQuote.code.in_(batch),
+                            StockDailyQuote.date >= start_date,
+                            StockDailyQuote.date <= end_date,
                         )
-                        .order_by(StockDaily.code, StockDaily.date)
+                        .order_by(StockDailyQuote.code, StockDailyQuote.date)
                     )
-                    chunk = pd.read_sql(stmt, conn)
-                    if chunk.empty:
+                    rows = session.execute(stmt).scalars().all()
+                    if not rows:
                         continue
+                    records: List[Dict[str, Any]] = []
+                    for row in rows:
+                        rec: Dict[str, Any] = {
+                            "code": row.code,
+                            "date": row.date,
+                            "open": row.open,
+                            "high": row.high,
+                            "low": row.low,
+                            "volume": row.volume,
+                            "amount": row.amount,
+                            "turnover_rate": getattr(row, "turnover_rate", None),
+                            "float_shares": getattr(row, "float_shares", None),
+                            "volume_ratio": getattr(row, "volume_ratio", None),
+                            "change": getattr(row, "change", None),
+                            "change_percent": getattr(row, "change_percent", None),
+                        }
+                        last = getattr(row, "last", None)
+                        if last is None:
+                            last = getattr(row, "price", None)
+                        rec["last"] = last
+                        rec["close"] = last
+                        records.append(rec)
+                    chunk = pd.DataFrame(records)
                     chunk["code"] = chunk["code"].astype(str).str.upper()
                     for code, group in chunk.groupby("code", sort=False):
                         g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
-                        if "last" in g.columns:
-                            g["close"] = g["last"]
                         result[str(code).upper()] = g
         except Exception as exc:
-            logger.error("批量 JOIN 读取失败: %s", exc)
+            logger.error("批量读 quote 失败: %s", exc)
             raise
         return result
 
     def get_coverage(self, code: str) -> Dict[str, Any]:
-        """查询 stock_daily 已存最早/最晚日期与条数。"""
-        try:
-            with self.db.get_session() as session:
-                first, last, cnt = session.execute(
-                    select(
-                        func.min(StockDaily.date),
-                        func.max(StockDaily.date),
-                        func.count(),
-                    ).where(StockDaily.code == code)
-                ).one()
-            return {"first": first, "last": last, "rows": int(cnt or 0)}
-        except Exception as e:
-            logger.error(f"查询 {code} K线覆盖失败: {e}")
-            return {"first": None, "last": None, "rows": 0}
+        """查询 stock_daily_quote 已存最早/最晚日期与条数（单表权威源）。"""
+        return self.get_quote_coverage(code)
 
     def get_quote_coverage(self, code: str) -> Dict[str, Any]:
         """查询 stock_daily_quote 已存最早/最晚日期与条数。"""

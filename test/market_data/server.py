@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-行情数据验证测试服务（独立启动，不依赖主 WebUI）。
+行情数据验证测试服务（westock quote --date 单表）。
 
 用法：
   cd daily_stock_analysis
@@ -21,7 +21,6 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# 项目根目录
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -42,7 +41,6 @@ app = FastAPI(title="Market Data Verify", docs_url="/docs")
 
 @app.exception_handler(Exception)
 async def _unhandled_exception(_request: Request, exc: Exception) -> JSONResponse:
-    """未捕获异常也返回 JSON，避免前端解析纯文本 Internal Server Error。"""
     logger.exception("verify 服务未捕获异常")
     return JSONResponse(
         {"success": False, "error": str(exc), "errors": [str(exc)]},
@@ -58,7 +56,6 @@ def _latest_weekday(d: Optional[date] = None) -> date:
 
 
 def _json_safe(value: Any) -> Any:
-    """将 NaN/Inf 转为 None，便于 JSON 序列化。"""
     if value is None:
         return None
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
@@ -69,7 +66,7 @@ def _json_safe(value: Any) -> Any:
         return [_json_safe(v) for v in value]
     if isinstance(value, (date, datetime)):
         return value.isoformat()
-    if hasattr(value, "item"):  # numpy scalar
+    if hasattr(value, "item"):
         try:
             return _json_safe(value.item())
         except Exception:  # noqa: BLE001
@@ -92,17 +89,6 @@ def _row_to_dict(obj: Any) -> Dict[str, Any]:
     return _json_safe(out)
 
 
-def _parse_raw_json(raw: Any) -> Dict[str, Any]:
-    if not raw:
-        return {}
-    if isinstance(raw, dict):
-        return raw
-    try:
-        return json.loads(str(raw))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-
-
 @app.get("/")
 def index() -> FileResponse:
     return FileResponse(_HERE / "index.html")
@@ -114,7 +100,7 @@ def verify(
     quote_date: Optional[str] = Query(None, description="交易日 YYYY-MM-DD，默认最近工作日"),
     save: bool = Query(False, description="是否拉取后写入 SQLite"),
 ) -> JSONResponse:
-    """拉取 Tencent K 线 + westock quote，并对比 DB 已存数据。"""
+    """拉取 westock quote --date，并对比 stock_daily_quote 已存数据。"""
     t0 = time.time()
     code = (code or "").strip().upper()
     if not code:
@@ -127,46 +113,13 @@ def verify(
 
     from data_provider.westock_client import fetch_quote_snapshot, parse_quote_snapshot, to_westock_symbol
     from src.ingest import DailyIngestService
-    from src.ingest.tencent_kline import TencentKlineIngestor
     from src.repositories.stock_repo import StockRepository
 
     repo = StockRepository()
     ingest = DailyIngestService(repo)
-    kline_ingestor = TencentKlineIngestor()
     symbol = to_westock_symbol(code)
     errors: list[str] = []
 
-    # ── 实时拉取 K 线（预览不写库；save 时入库）──
-    kline_live: Dict[str, Any] = {}
-    try:
-        fetched = kline_ingestor.fetch(code, start=d, end=d)
-        df = fetched.df
-        if df is None or df.empty:
-            kline_live["error"] = "K 线返回空"
-        else:
-            row = df.iloc[-1].to_dict()
-            for k, v in list(row.items()):
-                if hasattr(v, "isoformat"):
-                    row[k] = v.isoformat()[:10] if k == "date" else str(v)
-            kline_live["source"] = fetched.source
-            kline_live["fields"] = _json_safe({
-                "date": d.isoformat(),
-                "open": row.get("open"),
-                "high": row.get("high"),
-                "low": row.get("low"),
-                "last": row.get("last", row.get("close")),
-                "volume": row.get("volume"),
-                "amount": row.get("amount"),
-                "exchange": row.get("exchange"),
-            })
-        if save:
-            added = repo.save_dataframe(df, code, data_source=fetched.source)
-            kline_live["rows_saved"] = added
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"K线: {exc}")
-        kline_live["error"] = str(exc)
-
-    # ── 实时拉取 quote ──
     quote_live: Dict[str, Any] = {"westock_symbol": symbol}
     try:
         if not symbol:
@@ -188,17 +141,12 @@ def verify(
         try:
             q = ingest.ingest_quote(code, start=d, end=d)
             quote_live["quote_rows_saved"] = q.quote_added
-            saved = True
+            saved = q.quote_added > 0
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"入库 quote: {exc}")
+            errors.append(f"入库: {exc}")
 
-    # ── DB 快照 ──
-    kline_db: Dict[str, Any] = {}
     quote_db: Dict[str, Any] = {}
     try:
-        rows = repo.get_range(code, d, d)
-        if rows:
-            kline_db = _row_to_dict(rows[0])
         qrows = repo.get_quote_range(code, d, d)
         if qrows:
             quote_db = _row_to_dict(qrows[0])
@@ -214,9 +162,7 @@ def verify(
         "saved": saved,
         "elapsed_ms": elapsed_ms,
         "errors": errors,
-        "kline_live": kline_live,
         "quote_live": quote_live,
-        "kline_db": kline_db,
         "quote_db": quote_db,
     }))
 

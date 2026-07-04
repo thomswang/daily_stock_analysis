@@ -1,73 +1,47 @@
 # -*- coding: utf-8 -*-
-"""DailyIngestService 与腾讯锁定数据源测试。"""
+"""DailyIngestService 与 quote 单表采集测试。"""
 
 from __future__ import annotations
 
 from datetime import date
-from unittest.mock import MagicMock, patch
-
-import pandas as pd
+from unittest.mock import MagicMock
 
 from src.ingest.service import DailyIngestService, IngestResult
+from src.ingest.protocols import QuoteFetchResult
 
 
-def test_ingest_kline_delegates_to_tencent_only() -> None:
-    df = pd.DataFrame([{"date": "2026-06-25", "close": 100.0}])
-    kline = MagicMock()
-    kline.fetch.return_value = type("R", (), {"df": df, "source": "TencentFetcher"})()
-    kline.source_name = "TencentFetcher"
+def test_ingest_quote_delegates_to_westock() -> None:
+    quote = MagicMock()
+    quote.backfill.return_value = QuoteFetchResult(rows_saved=3, source="TencentQuote")
+    quote.source_name = "TencentQuote"
 
     repo = MagicMock()
-    repo.save_dataframe.return_value = 1
+    svc = DailyIngestService(repo=repo, quote=quote)
+    result = svc.ingest_quote("600519", start=date(2026, 6, 25), end=date(2026, 6, 27))
 
-    svc = DailyIngestService(repo=repo, kline=kline, quote_enabled=False)
-    result = svc.ingest_kline("600519", start=date(2026, 6, 25), end=date(2026, 6, 25))
-
-    kline.fetch.assert_called_once()
-    assert result.kline_added == 1
-    assert result.kline_source == "TencentFetcher"
+    quote.backfill.assert_called_once()
+    assert result.quote_added == 3
+    assert result.kline_added == 0
+    assert result.quote_source == "TencentQuote"
 
 
-def test_get_daily_data_source_pin_skips_failover() -> None:
-    from data_provider.base import DataFetcherManager, DataFetchError
-    from data_provider.tencent_fetcher import TencentFetcher
+def test_ingest_range_is_quote_only() -> None:
+    quote = MagicMock()
+    quote.backfill.return_value = QuoteFetchResult(rows_saved=1, source="TencentQuote")
 
-    tencent = TencentFetcher()
-    efinance = MagicMock()
-    efinance.name = "EfinanceFetcher"
-    efinance.priority = 0
+    svc = DailyIngestService(repo=MagicMock(), quote=quote)
+    result = svc.ingest_range("600519", start=date(2026, 7, 3), end=date(2026, 7, 3))
 
-    manager = DataFetcherManager(fetchers=[efinance, tencent])
+    quote.backfill.assert_called_once()
+    assert result.quote_added == 1
 
-    with patch.object(
-        TencentFetcher,
-        "get_daily_data",
-        return_value=pd.DataFrame([{"date": "2026-06-25", "close": 1.0}]),
-    ):
-        df, source = manager.get_daily_data(
-            "600519",
-            start_date="2026-06-25",
-            end_date="2026-06-25",
-            source="TencentFetcher",
-        )
-    assert source == "TencentFetcher"
-    assert not df.empty
-    efinance.get_daily_data.assert_not_called()
 
-    with patch.object(
-        TencentFetcher,
-        "get_daily_data",
-        side_effect=DataFetchError("tencent down"),
-    ):
-        try:
-            manager.get_daily_data(
-                "600519",
-                start_date="2026-06-25",
-                end_date="2026-06-25",
-                source="TencentFetcher",
-            )
-            raised = False
-        except DataFetchError:
-            raised = True
-    assert raised
-    efinance.get_daily_data.assert_not_called()
+def test_ingest_kline_deprecated_routes_to_quote() -> None:
+    quote = MagicMock()
+    quote.backfill.return_value = QuoteFetchResult(rows_saved=2, source="TencentQuote")
+
+    svc = DailyIngestService(repo=MagicMock(), quote=quote)
+    result = svc.ingest_kline("600519", start=date(2026, 7, 1), end=date(2026, 7, 2))
+
+    quote.backfill.assert_called_once()
+    assert result.quote_added == 2

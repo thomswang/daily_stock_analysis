@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""训练批量读库：JOIN 预加载测试。"""
+"""训练批量读库：quote 单表预加载测试。"""
 
 from __future__ import annotations
 
@@ -7,8 +7,6 @@ import os
 import tempfile
 import unittest
 from datetime import date
-
-import pandas as pd
 
 from src.repositories.stock_repo import StockRepository, compute_training_date_range
 from src.storage import DatabaseManager
@@ -22,27 +20,51 @@ class TestTrainingBulkLoad(unittest.TestCase):
         self.db = DatabaseManager(db_url=f"sqlite:///{self.db_path}")
         self.repo = StockRepository(self.db)
 
-        kline_a = pd.DataFrame([
-            {"date": "2024-01-02", "open": 10, "high": 11, "low": 9, "last": 10.5,
-             "volume": 1000, "amount": 10000, "exchange": None},
-            {"date": "2024-01-03", "open": 10.5, "high": 11, "low": 10, "last": 10.8,
-             "volume": 1100, "amount": 11000, "exchange": None},
-        ])
-        kline_b = pd.DataFrame([
-            {"date": "2024-01-02", "open": 20, "high": 21, "low": 19, "last": 20.5,
-             "volume": 2000, "amount": 20000, "exchange": None},
-        ])
-        self.db.save_daily_data(kline_a, "600519", data_source="test")
-        self.db.save_daily_data(kline_b, "000001", data_source="test")
+        self.db.save_daily_quote_data(
+            [
+                {
+                    "date": date(2024, 1, 2),
+                    "open": 10.0,
+                    "high": 11.0,
+                    "low": 9.0,
+                    "price": 10.5,
+                    "last": 10.5,
+                    "volume": 1000.0,
+                    "amount": 10000.0,
+                    "turnover_rate": 0.3,
+                    "float_shares": 1e9,
+                    "change": 1.0,
+                    "raw_json": "{}",
+                },
+                {
+                    "date": date(2024, 1, 3),
+                    "open": 10.5,
+                    "high": 11.0,
+                    "low": 10.0,
+                    "price": 10.8,
+                    "last": 10.8,
+                    "volume": 1100.0,
+                    "amount": 11000.0,
+                    "turnover_rate": 0.25,
+                    "raw_json": "{}",
+                },
+            ],
+            "600519",
+            data_source="test",
+        )
         self.db.save_daily_quote_data(
             [{
                 "date": date(2024, 1, 2),
-                "turnover_rate": 0.3,
-                "float_shares": 1e9,
-                "change": 1.0,
+                "open": 20.0,
+                "high": 21.0,
+                "low": 19.0,
+                "price": 20.5,
+                "last": 20.5,
+                "volume": 2000.0,
+                "amount": 20000.0,
                 "raw_json": "{}",
             }],
-            "600519",
+            "000001",
             data_source="test",
         )
 
@@ -61,10 +83,16 @@ class TestTrainingBulkLoad(unittest.TestCase):
         self.assertEqual(len(out["600519"]), 2)
         self.assertEqual(len(out["000001"]), 1)
         self.assertAlmostEqual(float(out["600519"].iloc[0]["turnover_rate"]), 0.3)
+        self.assertAlmostEqual(float(out["600519"].iloc[0]["close"]), 10.5)
 
     def test_load_merged_df_single_code(self) -> None:
         df = self.repo.load_merged_df("600519", date(2024, 1, 1), date(2024, 1, 31))
         self.assertEqual(len(df), 2)
+
+    def test_get_coverage_from_quote_table(self) -> None:
+        cov = self.repo.get_coverage("600519")
+        self.assertEqual(cov["rows"], 2)
+        self.assertEqual(cov["first"], date(2024, 1, 2))
 
     def test_compute_training_date_range(self) -> None:
         start, end = compute_training_date_range(250, end_date=date(2024, 6, 1))

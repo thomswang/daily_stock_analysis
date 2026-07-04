@@ -97,10 +97,9 @@ class DatabaseSchemaMigration(Base):
 
 class StockDaily(Base):
     """
-    Tencent fqkline 日 K 线（字段对齐 westock-data/test index.html kline 段）。
+    [已废弃] 旧 Tencent fqkline 表；新数据请写 stock_daily_quote。
 
-    last=收盘价；volume=成交量(手)；exchange=换手率(%)，历史 fqkline 通常为空。
-    界面 40+ 截面字段在 stock_daily_quote（quote --date）。
+    保留 ORM 仅为兼容尚未迁移的读路径，回填不再写入。
     """
     __tablename__ = 'stock_daily'
 
@@ -153,9 +152,9 @@ def _quote_column(name: str):
 
 class StockDailyQuote(Base):
     """
-    westock quote --date 日截面（字段对齐 test/index.html FIELD_DICT）。
+    westock quote --date 日线唯一权威表（对齐 test/index.html FIELD_DICT）。
 
-    与 stock_daily 按 code+date join；raw_json 保留 CLI 原始 JSON 便于对账。
+    按 code+date 一行；逐日循环拉取；raw_json 保留 CLI 原始 JSON。
     """
     __tablename__ = "stock_daily_quote"
 
