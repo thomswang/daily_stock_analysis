@@ -184,7 +184,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--retry", type=int, default=1, help="单只失败重试次数（默认 1）")
     parser.add_argument("--retry-failed", action="store_true",
                         help="仅重试台账中 failed 的代码（不含 done/skipped/empty；empty=确定无数据如次新股）")
-    parser.add_argument("--sleep", type=float, default=0.5, help="每次请求后的限流秒数（默认 0.5）")
+    parser.add_argument("--sleep", type=float, default=0.1, help="每次请求后的限流秒数（默认 0.1）")
     parser.add_argument("--limit", type=int, default=None, help="仅处理前 N 只（试跑）")
     # 台账与调度
     parser.add_argument("--progress", type=str, default=os.path.join("data", "backfill_progress.json"),

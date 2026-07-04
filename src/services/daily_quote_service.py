@@ -23,7 +23,7 @@ class DailyQuoteService:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
         self.batch_size = int(os.getenv("WESTOCK_QUOTE_BATCH", "3"))
-        self.sleep_batches = float(os.getenv("WESTOCK_QUOTE_SLEEP", "0.3"))
+        self.sleep_batches = float(os.getenv("WESTOCK_QUOTE_SLEEP", "0.1"))
 
     def fetch_snapshots(
         self,
