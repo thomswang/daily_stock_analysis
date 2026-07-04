@@ -6,12 +6,16 @@
 
 数据写入单表 stock_daily_quote（westock quote --date，与 test/index.html 日K全字段一致）：
   按每个工作日循环请求，一天一行、40+ 字段。
-
-默认 --layer quote（all/kline 已废弃，会自动按 quote 执行）。
+  回填前需有 data/cache/cn_list_dates.json（python scripts/fetch_cn_list_dates.py）。
 
 ────────────────────────────────────────────────────────────
 一、单进程常用命令
 ────────────────────────────────────────────────────────────
+
+  大区间自动用 cn_list_dates.json 上市日裁剪起点（先运行 scripts/fetch_cn_list_dates.py）。
+
+  # 首次：批量拉全市场上市日（约 260 批，可中断续传）
+  python scripts/fetch_cn_list_dates.py
 
   # 全 A 股，从 2010 拉到今天（可随时 Ctrl+C 中断，重跑自动续传）
   python backfill_history.py --all --start 2010-01-01
@@ -121,7 +125,7 @@ def _print_progress_status(progress_path: str) -> None:
     print(f"文件:     {progress_path}")
     print(
         f"区间:     {meta.get('start_date')} ~ {meta.get('end_date')}  "
-        f"模式={meta.get('mode')}  layer={meta.get('layer', 'all')}"
+        f"模式={meta.get('mode')}"
     )
     print(f"计划总数: {meta.get('total')}   最后更新: {meta.get('updated_at')}")
     print("-" * 30)
@@ -138,13 +142,12 @@ def _run_backfill(args: argparse.Namespace) -> dict:
 
     service = HistoryBackfillService()
     codes = _resolve_codes(args, service)
-    logger.info("准备回填：%d 只股票，layer=%s", len(codes), args.layer)
+    logger.info("准备回填：%d 只股票", len(codes))
     return service.run(
         codes,
         start_date=args.start,
         end_date=args.end,
         mode=args.mode,
-        layer=args.layer,
         sleep=args.sleep,
         retry=args.retry,
         fresh_days=args.fresh_days,
@@ -175,10 +178,6 @@ def parse_args() -> argparse.Namespace:
         choices=["full", "incremental", "smart", "range"], default="full",
         help="full=整段拉；incremental=只补最新缺口；smart=按覆盖补缺口；range=精确区间（多进程分片）",
     )
-    parser.add_argument(
-        "--layer", type=str, choices=["all", "kline", "quote"], default="quote",
-        help="quote=westock quote --date 单表（默认）；all/kline 已废弃，等同 quote",
-    )
     # 续传/容错/限流
     parser.add_argument("--fresh-days", type=int, default=4, help="DB 最新日期距今≤该天数则视为已最新并跳过（默认 4）")
     parser.add_argument("--force", action="store_true", help="忽略已最新判断，强制按 start 重拉")
@@ -197,9 +196,8 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _print_summary(stats: dict, layer: str = "quote") -> None:
+def _print_summary(stats: dict) -> None:
     print("\n===== 回填完成 =====")
-    print(f"layer:    {layer}")
     print(f"计划总数: {stats['total']}")
     print(f"实际拉取: {stats['fetched']}")
     print(f"跳过(已最新): {stats['skipped']}")
@@ -238,7 +236,7 @@ def main() -> int:
         return 0
 
     stats = _run_backfill(args)
-    _print_summary(stats, layer=args.layer)
+    _print_summary(stats)
     return 0
 
 

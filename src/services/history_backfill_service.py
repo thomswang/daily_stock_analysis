@@ -1,18 +1,18 @@
 # -*- coding: utf-8 -*-
 """
 =========================================
-全历史日线数据回填服务（History Backfill）
+全历史日线 quote 回填服务（History Backfill）
 =========================================
 
-目标：把全市场（或指定股票）从很早的年份（默认 2010-01-01）到今天的日线数据
-一次性灌入本地 stock_daily 缓存，支持**中断续传**——已经拉过的股票不再重复请求。
+目标：把全市场（或指定股票）从指定起始日到今天的 westock quote --date 数据
+灌入 stock_daily_quote 单表，支持**中断续传**。
 
-设计要点（与主分析/预测/训练解耦，复用同一套缓存）：
-1. **代码清单**：默认读 stocks.index.json，筛选 A 股（country=CN & type=stock）。
-2. **采集**：`DailyIngestService`（src/ingest/）统一编排两层腾讯接口 → 两张表。
-3. **断点续传**：DB 覆盖 + JSON 进度台账。
-4. **模式**：full / incremental / smart（见 run 文档）。
-5. **限流**：单只失败不中断整体；请求间 sleep。
+设计要点：
+1. **代码清单**：stocks.index.json，A 股（country=CN & type=stock）。
+2. **采集**：DailyIngestService → quote --date 逐工作日。
+3. **上市前优化**：`cn_list_dates.json` 静态上市日裁剪起点（`max(start, list_date)`）。
+4. **断点续传**：DB 覆盖 + JSON 进度台账。
+5. **模式**：full / incremental / smart / range（见 _plan_segments）。
 
 ⚠️ 数据仅供技术研究，不构成任何投资建议。
 """
@@ -25,6 +25,8 @@ import os
 import time
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from data_provider.base import normalize_stock_code
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +85,12 @@ class ProgressLedger:
     结构：
         {
           "meta": {"start_date": "...", "updated_at": "...", "total": N},
-          "codes": { code: {status, first, last, rows, source, updated_at, error} }
+          "codes": {
+            code: {
+              status, first, last, rows, source, updated_at, error,
+              min_start,   # 历史上最早请求过的 start（水位线）
+            }
+          }
         }
     """
 
@@ -219,7 +226,6 @@ class HistoryBackfillService:
         start_date: str = DEFAULT_START_DATE,
         end_date: Optional[str] = None,
         mode: str = "full",
-        layer: str = "all",
         sleep: float = 0.5,
         retry: int = 1,
         fresh_days: int = 4,
@@ -230,25 +236,22 @@ class HistoryBackfillService:
         log_every: int = 1,
         stop_check: Optional[Callable[[], bool]] = None,
     ) -> Dict[str, Any]:
-        """执行回填。
+        """执行 quote --date 回填。
 
         Args:
             codes: 待回填代码列表
             start_date/end_date: 回填区间（end 默认今天）
             mode: full | incremental | smart | range（见 _plan_segments）
-            layer: all（K线+quote）| kline | quote
             sleep: 每次实际请求后的限流秒数
             retry: 单只失败重试次数
             fresh_days: DB 最新日期距今 <= 该自然日数则视为“已最新”，跳过
-            force: 忽略“已最新”判断，强制按 start 重新拉（并复查已标记 empty 的票）
-            retry_failed: 仅处理台账中 status=failed 的代码（不含 done/skipped/empty）
+            force: 忽略“已最新”判断，强制重拉（并复查已标记 empty 的票）
+            retry_failed: 仅处理台账中 status=failed 的代码
             limit: 仅处理前 N 只（试跑）
             progress_path: 进度台账路径
         """
         if mode not in ("full", "incremental", "smart", "range"):
             raise BackfillError(f"未知模式：{mode}（应为 full / incremental / smart / range）")
-        if layer not in ("all", "kline", "quote"):
-            raise BackfillError(f"未知 layer：{layer}（应为 all / kline / quote）")
 
         end_date = end_date or date.today().isoformat()
         end_d = _parse_date(end_date)
@@ -257,14 +260,22 @@ class HistoryBackfillService:
             raise BackfillError("start_date/end_date 格式应为 YYYY-MM-DD")
 
         ledger = ProgressLedger(progress_path)
-        ledger.set_meta(start_date=start_date, end_date=end_date, mode=mode, layer=layer)
+        ledger.set_meta(start_date=start_date, end_date=end_date, mode=mode)
 
-        # 已确认“无数据”的票（如次新股在早年尚未上市）：非 force 时跳过，避免反复空请求。
-        # 需要复查（例如怀疑此前误判）时加 --force 即可强制重拉。
+        from src.services.cn_list_date_store import load_list_date_map
+
+        list_dates = load_list_date_map()
+        if list_dates:
+            logger.info("已加载上市日 metadata：%d 只", len(list_dates))
+        else:
+            logger.warning(
+                "未找到 cn_list_dates.json，将依赖探测兜底；"
+                "建议先运行: python scripts/fetch_cn_list_dates.py"
+            )
+
         if not force:
             codes = [c for c in codes if ledger.get(c).get("status") != "empty"]
 
-        # 仅重试失败的（不含已完成/已跳过/已确认无数据）
         if retry_failed:
             codes = [
                 c for c in codes
@@ -276,8 +287,8 @@ class HistoryBackfillService:
         total = len(codes)
         ledger.set_meta(total=total)
         logger.info(
-            "开始回填：%d 只，区间 %s ~ %s，模式=%s，layer=%s，限流=%.2fs，force=%s",
-            total, start_date, end_date, mode, layer, sleep, force,
+            "开始回填：%d 只，区间 %s ~ %s，模式=%s，限流=%.2fs，force=%s",
+            total, start_date, end_date, mode, sleep, force,
         )
 
         stats = {
@@ -301,10 +312,12 @@ class HistoryBackfillService:
             new_min = start_d if prev_min is None else min(prev_min, start_d)
 
             try:
+                plain = normalize_stock_code(code)
                 result = self._backfill_one(
-                    code, start_d=start_d, end_d=end_d, mode=mode, layer=layer,
+                    code, start_d=start_d, end_d=end_d, mode=mode,
                     retry=retry, fresh_days=fresh_days, force=force, sleep=sleep,
                     min_attempted=prev_min,
+                    list_date=list_dates.get(plain),
                 )
             except Exception as exc:  # noqa: BLE001 - 单只异常不应中断整体
                 logger.warning("[%d/%d] %s 回填异常：%s", i, total, code, exc)
@@ -320,8 +333,10 @@ class HistoryBackfillService:
                               last=_iso(result.get("last")), rows=result.get("rows"))
             elif action == "empty":
                 stats["empty"] += 1
-                ledger.update(code, status="empty", min_start=_iso(new_min),
-                              error=result.get("error") or "数据源返回空")
+                ledger.update(
+                    code, status="empty", min_start=_iso(new_min),
+                    error=result.get("error") or "数据源返回空",
+                )
             elif action == "failed":
                 stats["failed"] += 1
                 ledger.update(code, status="failed", error=result.get("error"))
@@ -349,89 +364,59 @@ class HistoryBackfillService:
         ledger.set_meta(finished_at=datetime.now().isoformat(timespec="seconds"))
         ledger.save()
         logger.info(
-            "回填结束 [%s]：拉取 %d / 跳过 %d / 失败 %d / 空 %d，"
+            "回填结束：拉取 %d / 跳过 %d / 失败 %d / 空 %d，"
             "新增 quote 行 %d，台账：%s",
-            layer, stats["fetched"], stats["skipped"], stats["failed"],
+            stats["fetched"], stats["skipped"], stats["failed"],
             stats["empty"], stats["quote_rows"], progress_path,
         )
         return stats
 
     def _backfill_one(
-        self, code: str, *, start_d: date, end_d: date, mode: str, layer: str,
+        self, code: str, *, start_d: date, end_d: date, mode: str,
         retry: int, fresh_days: int, force: bool, sleep: float,
         min_attempted: Optional[date] = None,
+        list_date: Optional[date] = None,
     ) -> Dict[str, Any]:
         """处理单只股票，返回 {action, ...}。action ∈ skipped/fetched/empty/failed。"""
-        if layer in ("all", "kline"):
-            logger.warning(
-                "layer=%s 已废弃，统一使用 quote --date 单表；按 quote 执行 %s",
-                layer, code,
-            )
-        return self._backfill_quote_only(
+        return self._backfill_quote(
             code, start_d=start_d, end_d=end_d, mode=mode,
             retry=retry, fresh_days=fresh_days, force=force, sleep=sleep,
             min_attempted=min_attempted,
+            list_date=list_date,
         )
 
-    def _backfill_kline_only(
+    def _backfill_quote(
         self, code: str, *, start_d: date, end_d: date, mode: str,
         retry: int, fresh_days: int, force: bool, sleep: float,
         min_attempted: Optional[date] = None,
+        list_date: Optional[date] = None,
     ) -> Dict[str, Any]:
-        coverage = self.repo.get_coverage(code)
-        segments = self._plan_segments(
-            start_d=start_d, end_d=end_d,
-            first=coverage.get("first"), last=coverage.get("last"),
-            mode=mode, fresh_days=fresh_days, force=force,
-            min_attempted=None if force else min_attempted,
-        )
-        if not segments:
-            return {"action": "skipped", "last": coverage.get("last"), "rows": coverage.get("rows", 0)}
+        from src.services.quote_backfill_planner import resolve_effective_start
 
-        total_added = 0
-        used_source = None
-        got_any = False
-        for seg_start, seg_end in segments:
-            result, err = self._ingest_kline_with_retry(code, seg_start, seg_end, retry=retry)
-            if sleep > 0:
-                time.sleep(sleep)
-            if err is not None:
-                if got_any:
-                    logger.warning("%s K线分段 %s~%s 失败：%s（已保留其余段）", code, seg_start, seg_end, err)
-                    continue
-                if _is_no_data_error(err):
-                    return {"action": "empty", "error": err}
-                return {"action": "failed", "error": err}
-            if result is not None:
-                total_added += int(result.kline_added)
-                used_source = result.kline_source or used_source
-                got_any = True
-
-        if not got_any:
-            return {"action": "empty"}
-
-        cov2 = self.repo.get_coverage(code)
-        return {
-            "action": "fetched", "added": total_added,
-            "first": cov2.get("first"), "last": cov2.get("last"),
-            "rows": cov2.get("rows"), "source": used_source,
-            "quote_rows": 0,
-        }
-
-    def _backfill_quote_only(
-        self, code: str, *, start_d: date, end_d: date, mode: str,
-        retry: int, fresh_days: int, force: bool, sleep: float,
-        min_attempted: Optional[date] = None,
-    ) -> Dict[str, Any]:
         coverage = self.repo.get_quote_coverage(code)
+        effective_start, start_reason = resolve_effective_start(
+            code, start_d, end_d, list_date=list_date, force=force,
+        )
+
+        if effective_start is None:
+            return {
+                "action": "empty",
+                "error": "区间内无 quote 数据",
+                "start_reason": start_reason,
+            }
+
         segments = self._plan_segments(
-            start_d=start_d, end_d=end_d,
+            start_d=effective_start, end_d=end_d,
             first=coverage.get("first"), last=coverage.get("last"),
             mode=mode, fresh_days=fresh_days, force=force,
             min_attempted=None if force else min_attempted,
         )
         if not segments:
-            return {"action": "skipped", "last": coverage.get("last"), "rows": coverage.get("rows", 0)}
+            return {
+                "action": "skipped",
+                "last": coverage.get("last"),
+                "rows": coverage.get("rows", 0),
+            }
 
         total_quote = 0
         got_any = False
@@ -462,68 +447,8 @@ class HistoryBackfillService:
             "rows": cov2.get("rows"),
             "source": "TencentQuote",
             "quote_rows": total_quote,
-        }
-
-    def _backfill_all_layers(
-        self, code: str, *, start_d: date, end_d: date, mode: str,
-        retry: int, fresh_days: int, force: bool, sleep: float,
-        min_attempted: Optional[date] = None,
-    ) -> Dict[str, Any]:
-        coverage = self.repo.get_coverage(code)
-        segments = self._plan_segments(
-            start_d=start_d, end_d=end_d,
-            first=coverage.get("first"), last=coverage.get("last"),
-            mode=mode, fresh_days=fresh_days, force=force,
-            min_attempted=None if force else min_attempted,
-        )
-        if not segments:
-            return {"action": "skipped", "last": coverage.get("last"), "rows": coverage.get("rows", 0)}
-
-        total_added = 0
-        used_source = None
-        got_any = False
-        for seg_start, seg_end in segments:
-            result, err = self._ingest_kline_with_retry(code, seg_start, seg_end, retry=retry)
-            if sleep > 0:
-                time.sleep(sleep)
-            if err is not None:
-                if got_any:
-                    logger.warning("%s 分段 %s~%s 拉取失败：%s（已保留其余段）",
-                                   code, seg_start, seg_end, err)
-                    continue
-                if _is_no_data_error(err):
-                    return {"action": "empty", "error": err}
-                return {"action": "failed", "error": err}
-            if result is not None:
-                total_added += int(result.kline_added)
-                used_source = result.kline_source or used_source
-                got_any = True
-
-        if not got_any:
-            return {"action": "empty"}
-
-        quote_rows = 0
-        quote_span_start = min(s for s, _ in segments)
-        quote_span_end = max(e for _, e in segments)
-        try:
-            q = self.ingest.ingest_quote(
-                code, start=quote_span_start, end=quote_span_end,
-            )
-            quote_rows = q.quote_added
-        except Exception as exc:  # noqa: BLE001 - 截面失败不废掉 K 线
-            logger.warning(
-                "%s quote 截面回填失败 [%s~%s]: %s",
-                code, quote_span_start, quote_span_end, exc,
-            )
-        if sleep > 0:
-            time.sleep(sleep)
-
-        cov2 = self.repo.get_coverage(code)
-        return {
-            "action": "fetched", "added": total_added,
-            "first": cov2.get("first"), "last": cov2.get("last"),
-            "rows": cov2.get("rows"), "source": used_source,
-            "quote_rows": quote_rows,
+            "start_reason": start_reason,
+            "effective_start": _iso(effective_start),
         }
 
     @staticmethod
@@ -574,25 +499,6 @@ class HistoryBackfillService:
         if (end_d - last).days <= fresh_days and start_d >= first:
             return []
         return [(start_d, end_d)] if start_d <= end_d else []
-
-    def _ingest_kline_with_retry(
-        self, code: str, seg_start: date, seg_end: date, *, retry: int,
-    ):
-        """返回 (IngestResult|None, error_str)。error_str 为 None 表示成功。"""
-        from data_provider.base import DataFetchError
-
-        last_err = None
-        for attempt in range(retry + 1):
-            try:
-                result = self.ingest.ingest_kline(code, start=seg_start, end=seg_end)
-                return result, None
-            except DataFetchError as exc:
-                last_err = str(exc)
-            except Exception as exc:  # noqa: BLE001
-                last_err = f"{type(exc).__name__}: {exc}"
-            if attempt < retry:
-                time.sleep(0.5 * (attempt + 1))
-        return None, last_err
 
     def _ingest_quote_with_retry(
         self, code: str, seg_start: date, seg_end: date, *, retry: int,

@@ -77,6 +77,8 @@ def run_westock_raw(args: List[str], *, timeout: float = _DEFAULT_TIMEOUT) -> An
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             cwd=str(Path(index_js).parents[1]),
             env={**os.environ, "FORCE_COLOR": "0", "NO_COLOR": "1"},
@@ -127,6 +129,56 @@ def fetch_quote_snapshot(stock_code: str, quote_date: str) -> Optional[Dict[str,
     if isinstance(payload, dict):
         return payload
     return None
+
+
+def fetch_profile_listed_dates(
+    stock_codes: List[str],
+    *,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> Dict[str, Dict[str, Optional[str]]]:
+    """批量 profile → {plain_code: {list_date, name}}（westock listedDate）。"""
+    symbols: List[str] = []
+    code_by_symbol: Dict[str, str] = {}
+    for raw in stock_codes:
+        plain = normalize_stock_code(raw)
+        sym = to_westock_symbol(plain)
+        if not sym:
+            continue
+        symbols.append(sym)
+        code_by_symbol[sym] = plain
+
+    if not symbols:
+        return {}
+
+    payload = run_westock_raw(["profile", ",".join(symbols)], timeout=timeout)
+    rows: List[Any]
+    if isinstance(payload, dict):
+        rows = payload.get("data") or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+
+    out: Dict[str, Dict[str, Optional[str]]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        sym = str(item.get("symbol") or "").strip().lower()
+        plain = code_by_symbol.get(sym) or normalize_stock_code(sym)
+        if not plain:
+            continue
+        data = item.get("data") if isinstance(item.get("data"), dict) else item
+        listed = None
+        name = None
+        if isinstance(data, dict):
+            listed_raw = data.get("listedDate") or data.get("list_date")
+            if listed_raw:
+                parsed = _parse_iso_date(str(listed_raw)[:10])
+                listed = parsed.isoformat() if parsed else str(listed_raw)[:10]
+            name_val = data.get("name")
+            name = str(name_val).strip() if name_val else None
+        out[plain] = {"list_date": listed, "name": name}
+    return out
 
 
 def fetch_quote_snapshots_range(
