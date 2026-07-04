@@ -779,13 +779,10 @@ class TestStorage(unittest.TestCase):
                             'open': 10,
                             'high': 11,
                             'low': 9,
-                            'close': 10.5,
+                            'last': 10.5,
                             'volume': 100,
                             'amount': 1050,
-                            'pct_chg': 1.2,
-                            'ma5': 10.1,
-                            'ma10': 10.2,
-                            'ma20': 10.3,
+                            'exchange': None,
                         }
                     ]
                 ),

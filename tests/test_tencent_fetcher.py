@@ -54,18 +54,19 @@ def test_tencent_fetcher_parses_qfq_daily_response() -> None:
         "open",
         "high",
         "low",
-        "close",
+        "last",
         "volume",
         "amount",
-        "pct_chg",
+        "exchange",
+        "close",
         "ma5",
         "ma10",
         "ma20",
         "volume_ratio",
     ]
     assert len(df) == 2
-    assert float(df.iloc[0]["close"]) == 10.5
-    assert float(df.iloc[0]["volume"]) == 1234500.0
+    assert float(df.iloc[0]["last"]) == 10.5
+    assert float(df.iloc[0]["volume"]) == 12345.0
     assert float(df.iloc[1]["amount"]) == 77890.0
 
 
@@ -102,8 +103,8 @@ def test_tencent_fetcher_requests_explicit_historical_date_window() -> None:
     assert ",day,2020-05-01,2020-05-31," in captured["params"]["param"]
     assert captured["params"]["param"].endswith(",qfq")
     assert len(df) == 1
-    assert float(df.iloc[0]["close"]) == 8.2
-    assert float(df.iloc[0]["volume"]) == 500000.0
+    assert float(df.iloc[0]["last"]) == 8.2
+    assert float(df.iloc[0]["volume"]) == 5000.0
 
 
 def test_tencent_fetcher_preserves_amount_column_when_missing() -> None:
@@ -129,7 +130,7 @@ def test_tencent_fetcher_preserves_amount_column_when_missing() -> None:
 
     assert "amount" in df.columns
     assert pd.isna(df.iloc[0]["amount"])
-    assert float(df.iloc[0]["volume"]) == 100000.0
+    assert float(df.iloc[0]["volume"]) == 1000.0
 
 
 def test_tencent_fetcher_returns_empty_frame_for_empty_history() -> None:
@@ -178,7 +179,7 @@ def test_tencent_fetcher_keeps_short_history_when_cap_not_hit() -> None:
 
     assert ",day,2020-01-01,2026-05-10,800,qfq" in captured["params"]["param"]
     assert len(df) == 2
-    assert float(df.iloc[0]["close"]) == 10.5
+    assert float(df.iloc[0]["last"]) == 10.5
 
 
 def test_tencent_fetcher_keeps_near_cap_short_history_for_new_listing() -> None:
@@ -214,7 +215,7 @@ def test_tencent_fetcher_keeps_near_cap_short_history_for_new_listing() -> None:
 
     assert ",day,2020-01-01,2026-05-10,800,qfq" in captured["params"]["param"]
     assert len(df) == 799
-    assert float(df.iloc[0]["close"]) == 10.5
+    assert float(df.iloc[0]["last"]) == 10.5
 
 
 def test_tencent_fetcher_keeps_capped_history_when_start_is_weekend() -> None:

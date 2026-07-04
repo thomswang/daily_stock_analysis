@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>行情数据验证（Tencent K线 + westock quote）</title>
+  <style>
+    :root {
+      --bg: #0d1117; --surface: #161b22; --surface-2: #21262d; --border: #30363d;
+      --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff; --green: #3fb950;
+      --red: #f85149; --orange: #d29922; --mono: Consolas, 'SF Mono', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); padding: 24px; line-height: 1.5; }
+    h1 { font-size: 1.4rem; margin-bottom: 4px; }
+    .sub { color: var(--dim); font-size: 0.85rem; margin-bottom: 20px; }
+    .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 16px; }
+    label { display: block; font-size: 0.7rem; color: var(--dim); text-transform: uppercase; margin-bottom: 4px; }
+    input, select {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 10px; border-radius: 6px; font-family: var(--mono); font-size: 0.85rem;
+    }
+    input:focus { outline: none; border-color: var(--accent); }
+    .btn {
+      background: #1f6feb; color: #fff; border: none; padding: 9px 16px; border-radius: 6px;
+      cursor: pointer; font-size: 0.85rem; font-weight: 500;
+    }
+    .btn:hover { background: var(--accent); }
+    .btn.secondary { background: var(--surface-2); border: 1px solid var(--border); color: var(--dim); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .shortcuts { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+    .chip {
+      background: var(--surface-2); border: 1px solid var(--border); color: var(--dim);
+      padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; cursor: pointer; font-family: var(--mono);
+    }
+    .chip:hover { color: var(--accent); border-color: var(--accent); }
+    .meta { display: flex; flex-wrap: wrap; gap: 12px; font-size: 0.8rem; color: var(--dim); margin-bottom: 12px; }
+    .badge { padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; }
+    .badge.ok { background: rgba(63,185,80,.15); color: var(--green); }
+    .badge.err { background: rgba(248,81,73,.15); color: var(--red); }
+    .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+    .tab {
+      background: none; border: none; color: var(--dim); padding: 8px 14px; cursor: pointer;
+      border-bottom: 2px solid transparent; font-size: 0.85rem;
+    }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    }
+    .card .k { font-family: var(--mono); font-size: 0.78rem; color: var(--accent); word-break: break-all; }
+    .card .lbl { font-size: 0.68rem; color: var(--dim); margin: 2px 0 4px; }
+    .card .v { font-family: var(--mono); font-size: 0.82rem; word-break: break-all; }
+    .card .v.empty { color: var(--dim); font-style: italic; }
+    .card .v.num { color: var(--orange); }
+    pre.raw {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+      padding: 12px; font-family: var(--mono); font-size: 0.75rem; overflow: auto; max-height: 60vh;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .empty-state { text-align: center; padding: 48px; color: var(--dim); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; font-family: var(--mono); }
+    th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    th { background: var(--surface-2); color: var(--accent); }
+    .diff-warn { color: var(--orange); }
+  </style>
+</head>
+<body>
+  <h1>行情数据验证</h1>
+  <p class="sub">Tencent fqkline（K线）+ westock quote --date（截面全字段）→ 对比 SQLite 已存数据</p>
+
+  <div class="bar">
+    <div>
+      <label>股票代码</label>
+      <input id="code" value="600519" style="width:100px">
+    </div>
+    <div>
+      <label>交易日</label>
+      <input id="date" type="date">
+    </div>
+    <button class="btn" id="btnPreview" onclick="run(false)">拉取预览</button>
+    <button class="btn secondary" id="btnSave" onclick="run(true)">拉取并入库</button>
+  </div>
+
+  <div class="shortcuts">
+    <span class="chip" onclick="quick('600519')">茅台 600519</span>
+    <span class="chip" onclick="quick('000001')">平安 000001</span>
+    <span class="chip" onclick="quick('600036')">招行 600036</span>
+    <span class="chip" onclick="setLatestDate()">最近工作日</span>
+  </div>
+
+  <div id="meta" class="meta"></div>
+  <div id="errors"></div>
+  <div id="content" class="empty-state">输入代码，点击「拉取预览」验证最新数据</div>
+
+  <script>
+    const FIELD_DICT = {
+      code:'股票代码', market_type:'市场类型', market_name:'市场名称', name:'名称', symbol:'交易代码',
+      price:'现价', prev_close:'昨收', open:'今开', high:'最高', low:'最低',
+      change:'涨跌额', change_percent:'涨跌幅(%)', volume:'成交量(手)', amount:'成交额(元)',
+      turnover_rate:'换手率(%)', volume_ratio:'量比', range_pct:'振幅(%)', avg_price:'均价',
+      pe_ratio:'市盈率TTM', pb_ratio:'市净率', total_market_cap:'总市值', circulating_market_cap:'流通市值',
+      total_shares:'总股本', float_shares:'流通股本', inner_volume:'内盘', outer_volume:'外盘',
+      last:'收盘价(kline)', exchange:'换手率(kline)', date:'交易日', raw_json:'原始JSON',
+      data_source:'数据来源', id:'ID', created_at:'创建', updated_at:'更新',
+    };
+
+    function setLatestDate() {
+      let d = new Date();
+      while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() - 1);
+      document.getElementById('date').value = d.toISOString().slice(0, 10);
+    }
+    setLatestDate();
+
+    function quick(c) {
+      document.getElementById('code').value = c;
+      run(false);
+    }
+
+    function esc(s) {
+      const d = document.createElement('div');
+      d.textContent = s == null ? '' : String(s);
+      return d.innerHTML;
+    }
+
+    function isNum(v) {
+      if (v === null || v === '' || v === undefined) return false;
+      return /^-?\d+(\.\d+)?$/.test(String(v).replace(/,/g, ''));
+    }
+
+    function renderCards(obj, skip = new Set(['raw_json', 'id', 'created_at', 'updated_at'])) {
+      if (!obj || typeof obj !== 'object') return '<div class="empty-state">无数据</div>';
+      const keys = Object.keys(obj).filter(k => !skip.has(k)).sort();
+      return '<div class="grid">' + keys.map(k => {
+        const v = obj[k];
+        const empty = v === null || v === undefined || v === '';
+        const lbl = FIELD_DICT[k] || '';
+        return `<div class="card">
+          <div class="k">${esc(k)}</div>
+          ${lbl ? `<div class="lbl">${esc(lbl)}</div>` : ''}
+          <div class="v ${empty ? 'empty' : ''} ${!empty && isNum(v) ? 'num' : ''}">${empty ? '(空)' : esc(v)}</div>
+        </div>`;
+      }).join('') + '</div>';
+    }
+
+    function renderCompare(live, db, keys) {
+      let html = '<table><thead><tr><th>字段</th><th>实时</th><th>数据库</th><th>一致</th></tr></thead><tbody>';
+      for (const k of keys) {
+        const a = live?.[k]; const b = db?.[k];
+        const same = String(a ?? '') === String(b ?? '') || (a == null && b == null);
+        html += `<tr>
+          <td>${esc(k)}</td>
+          <td>${a == null ? '<span class="empty">(空)</span>' : esc(a)}</td>
+          <td>${b == null ? '<span class="empty">(空)</span>' : esc(b)}</td>
+          <td class="${same ? '' : 'diff-warn'}">${same ? '✓' : '≠'}</td>
+        </tr>`;
+      }
+      return html + '</tbody></table>';
+    }
+
+    async function run(save) {
+      const code = document.getElementById('code').value.trim();
+      const date = document.getElementById('date').value;
+      const btnP = document.getElementById('btnPreview');
+      const btnS = document.getElementById('btnSave');
+      btnP.disabled = btnS.disabled = true;
+      document.getElementById('content').innerHTML = '<div class="empty-state">拉取中…</div>';
+
+      try {
+        const url = `/api/verify?code=${encodeURIComponent(code)}&quote_date=${encodeURIComponent(date)}&save=${save ? 'true' : 'false'}`;
+        const resp = await fetch(url);
+        const text = await resp.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch (_) {
+          throw new Error(
+            resp.ok
+              ? '响应不是合法 JSON'
+              : `HTTP ${resp.status}: ${text.slice(0, 200) || resp.statusText}`
+          );
+        }
+        if (!resp.ok && !data.errors?.length) {
+          data.errors = [data.error || `HTTP ${resp.status}`];
+        }
+        renderResult(data, save);
+      } catch (e) {
+        document.getElementById('meta').innerHTML = '';
+        document.getElementById('errors').innerHTML = '';
+        document.getElementById('content').innerHTML = `<div class="badge err">请求失败: ${esc(e.message)}</div>
+          <p style="margin-top:12px;color:var(--dim);font-size:0.85rem">请确认已重启 <code>python test/market_data/server.py</code>，并查看终端 traceback。</p>`;
+      } finally {
+        btnP.disabled = btnS.disabled = false;
+      }
+    }
+
+    function renderResult(data, saved) {
+      const meta = document.getElementById('meta');
+      const errEl = document.getElementById('errors');
+      meta.innerHTML = `
+        <span class="badge ${data.success ? 'ok' : 'err'}">${data.success ? '成功' : '部分失败'}</span>
+        <span>代码: <b>${esc(data.code)}</b> (${esc(data.westock_symbol || '-')})</span>
+        <span>日期: <b>${esc(data.date)}</b></span>
+        <span>耗时: <b style="color:var(--orange)">${data.elapsed_ms}ms</b></span>
+        ${saved && data.saved ? '<span class="badge ok">已入库</span>' : '<span class="badge">仅预览</span>'}
+        ${data.quote_live?.raw_key_count ? `<span>quote 原始键: <b>${data.quote_live.raw_key_count}</b></span>` : ''}
+      `;
+      errEl.innerHTML = (data.errors || []).length
+        ? '<div class="badge err" style="margin-bottom:12px">' + data.errors.map(esc).join(' · ') + '</div>'
+        : '';
+
+      const kLive = data.kline_live?.fields || {};
+      const qLive = data.quote_live?.fields || data.quote_live?.raw_json || {};
+      const qLiveFlat = data.quote_live?.fields || {};
+      const kDb = stripMeta(data.kline_db);
+      const qDb = stripMeta(data.quote_db);
+
+      const compareKeys = ['open','high','low','last','volume','amount','turnover_rate','change','change_percent','price'];
+
+      document.getElementById('content').innerHTML = `
+        <div class="tabs">
+          <button class="tab active" onclick="switchTab(event,'kline')">K线 实时</button>
+          <button class="tab" onclick="switchTab(event,'quote')">quote 实时 (${Object.keys(qLiveFlat).length} 字段)</button>
+          <button class="tab" onclick="switchTab(event,'dbk')">DB K线</button>
+          <button class="tab" onclick="switchTab(event,'dbq')">DB quote</button>
+          <button class="tab" onclick="switchTab(event,'cmp')">实时 vs DB</button>
+          <button class="tab" onclick="switchTab(event,'raw')">quote raw JSON</button>
+        </div>
+        <div id="p-kline" class="panel active">${renderCards(kLive)}</div>
+        <div id="p-quote" class="panel">${renderCards(qLiveFlat)}</div>
+        <div id="p-dbk" class="panel">${Object.keys(kDb).length ? renderCards(kDb) : '<div class="empty-state">库中无 K 线（可点「拉取并入库」）</div>'}</div>
+        <div id="p-dbq" class="panel">${Object.keys(qDb).length ? renderCards(qDb) : '<div class="empty-state">库中无 quote</div>'}</div>
+        <div id="p-cmp" class="panel">
+          <h3 style="margin:12px 0 8px;font-size:0.9rem">K线字段</h3>
+          ${renderCompare(kLive, kDb, ['open','high','low','last','volume','amount','exchange'])}
+          <h3 style="margin:16px 0 8px;font-size:0.9rem">quote 核心字段</h3>
+          ${renderCompare(qLiveFlat, qDb, ['price','change','change_percent','turnover_rate','volume','float_shares','pe_ratio','pb_ratio'])}
+        </div>
+        <div id="p-raw" class="panel"><pre class="raw">${esc(JSON.stringify(data.quote_live?.raw_json || {}, null, 2))}</pre></div>
+      `;
+    }
+
+    function stripMeta(o) {
+      if (!o) return {};
+      const c = {...o};
+      delete c.id; delete c.created_at; delete c.updated_at;
+      if (c.raw_json && typeof c.raw_json === 'string') {
+        try { c.raw_json = '(见 raw JSON 面板)'; } catch(e) {}
+      }
+      return c;
+    }
+
+    function switchTab(ev, name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      ev.target.classList.add('active');
+      document.getElementById('p-' + name).classList.add('active');
+    }
+  </script>
+</body>
+</html>

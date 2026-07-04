@@ -90,15 +90,20 @@ class TencentFetcher(BaseFetcher):
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         normalized = df.copy()
-        for column in ("open", "high", "low", "close", "volume", "amount"):
+        for column in ("open", "high", "low", "last", "close", "volume", "amount"):
             if column in normalized.columns:
                 normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-        if "pct_chg" not in normalized.columns:
-            normalized["pct_chg"] = normalized["close"].pct_change().fillna(0.0) * 100
+        if "last" not in normalized.columns and "close" in normalized.columns:
+            normalized["last"] = normalized["close"]
+        if "exchange" not in normalized.columns:
+            normalized["exchange"] = None
         keep = [
-            "date", "open", "high", "low", "close", "volume", "amount", "pct_chg",
+            "date", "open", "high", "low", "last", "volume", "amount", "exchange",
         ]
         normalized = normalized[[c for c in keep if c in normalized.columns]]
+        # 指标计算仍用 close；入库字段为 westock 的 last
+        if "last" in normalized.columns:
+            normalized["close"] = normalized["last"]
         return normalized
 
 
@@ -240,10 +245,10 @@ def _extract_kline_rows(payload: dict[str, Any], *, symbol: str) -> list[dict[st
             {
                 "date": str(row[0]),
                 "open": row[1],
-                "close": row[2],
+                "last": row[2],
                 "high": row[3],
                 "low": row[4],
-                "volume": _lots_to_shares(row[5]),
+                "volume": row[5],
                 "amount": amount,
             }
         )

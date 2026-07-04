@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from data_provider.westock_client import (
     enum_weekday_dates,
-    parse_quote_to_record,
+    parse_quote_snapshot,
     to_westock_symbol,
 )
 
@@ -43,10 +43,12 @@ def test_parse_quote_to_record() -> None:
         "inner_volume": 24565,
         "outer_volume": 23882,
     }
-    rec = parse_quote_to_record(raw)
+    rec = parse_quote_snapshot(raw, quote_date="2026-06-25")
     assert rec["turnover_rate"] == 0.39
     assert rec["float_shares"] == 1250081601.0
-    assert rec["change_amount"] == 4.42
+    assert rec["change"] == 4.42
+    assert rec["date"].isoformat() == "2026-06-25"
+    assert "raw_json" in rec
 
 
 def test_fetch_quote_snapshots_range_batches() -> None:

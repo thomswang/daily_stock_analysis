@@ -36,7 +36,7 @@ class DailyQuoteService:
         from data_provider.westock_client import (
             WestockCliError,
             fetch_quote_snapshots_range,
-            parse_quote_to_record,
+            parse_quote_snapshot,
         )
 
         try:
@@ -53,11 +53,10 @@ class DailyQuoteService:
 
         records: List[Dict[str, Any]] = []
         for d_str, raw in pairs:
-            parsed = parse_quote_to_record(raw)
-            if parsed.get("turnover_rate") is None:
+            parsed = parse_quote_snapshot(raw, quote_date=d_str)
+            if parsed.get("date") is None:
                 continue
-            row: Dict[str, Any] = {"date": date.fromisoformat(d_str[:10]), **parsed}
-            records.append(row)
+            records.append(parsed)
         return records
 
     def backfill_and_save(

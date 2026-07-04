@@ -1,16 +1,5 @@
 # -*- coding: utf-8 -*-
-"""WeStock Data CLI 客户端（调用 westock-data/scripts/index.js）。
-
-与 westock-data/test 对齐的两套接口：
-
-| 命令           | 底层           | 一次返回 | 时间维度           | 用途           |
-|----------------|----------------|----------|--------------------|----------------|
-| kline          | K 线历史接口   | 多天     | 时间序列           | OHLCV → stock_daily |
-| quote --date   | 行情快照接口   | 单天     | 截面（按天循环查） | 换手率等 → stock_daily_quote |
-
-核心矛盾：kline 高效但仅 8 列；quote --date 字段全（含逐日 turnover_rate /
-float_shares）但需按交易日逐天请求。test/index.html 的 runDailyK() 即后者逻辑。
-"""
+"""WeStock Data CLI 客户端（调用 westock-data/scripts/index.js）。"""
 
 from __future__ import annotations
 
@@ -25,6 +14,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import normalize_stock_code, is_bse_code
+from .westock_fields import (
+    WESTOCK_QUOTE_FLOAT_FIELDS,
+    WESTOCK_QUOTE_PERSIST_FIELDS,
+    WESTOCK_QUOTE_TEXT_FIELDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +137,7 @@ def fetch_quote_snapshots_range(
     sleep_between_batches: float = 0.0,
     timeout: float = _DEFAULT_TIMEOUT,
 ) -> List[Tuple[str, Dict[str, Any]]]:
-    """按交易日循环 quote --date（并发分批，对齐 test/server.js + index.html runDailyK）。"""
+    """按交易日循环 quote --date（并发分批，对齐 test/index.html runDailyK）。"""
     dates = enum_weekday_dates(start_date, end_date)
     if not dates:
         return []
@@ -175,33 +169,37 @@ def fetch_quote_snapshots_range(
 
 
 def parse_quote_to_record(raw: Dict[str, Any]) -> Dict[str, Optional[float]]:
-    """将 quote --date JSON 映射为 stock_daily_quote 列。"""
-    def _f(key: str) -> Optional[float]:
-        return _to_float(raw.get(key))
+    """兼容旧调用：返回 parse_quote_snapshot 的数值子集。"""
+    snap = parse_quote_snapshot(raw)
+    return {k: snap.get(k) for k in WESTOCK_QUOTE_FLOAT_FIELDS if k in snap}
 
-    float_shares = _f("float_shares")
-    if float_shares is not None and float_shares <= 0:
-        float_shares = None
-    total_shares = _f("total_shares")
-    if total_shares is not None and total_shares <= 0:
-        total_shares = None
 
-    return {
-        "turnover_rate": _f("turnover_rate"),
-        "float_shares": float_shares,
-        "total_shares": total_shares,
-        "volume_ratio": _f("volume_ratio"),
-        "range_pct": _f("range_pct"),
-        "change_amount": _f("change"),
-        "change_percent": _f("change_percent"),
-        "pe_ratio": _f("pe_ratio"),
-        "pb_ratio": _f("pb_ratio"),
-        "total_market_cap": _f("total_market_cap"),
-        "circulating_market_cap": _f("circulating_market_cap"),
-        "prev_close": _f("prev_close"),
-        "inner_volume": _f("inner_volume"),
-        "outer_volume": _f("outer_volume"),
-    }
+def parse_quote_snapshot(
+    raw: Dict[str, Any],
+    *,
+    quote_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """将 quote --date JSON 映射为 stock_daily_quote 行（键名与 index.html FIELD_DICT 一致）。"""
+    record: Dict[str, Any] = {}
+
+    for key in WESTOCK_QUOTE_FLOAT_FIELDS:
+        val = _to_float(raw.get(key))
+        if key in ("float_shares", "total_shares") and val is not None and val <= 0:
+            val = None
+        record[key] = val
+
+    for key in WESTOCK_QUOTE_TEXT_FIELDS:
+        val = raw.get(key)
+        record[key] = str(val).strip() if val is not None and str(val).strip() else None
+
+    d_str = quote_date or raw.get("date") or raw.get("time")
+    if d_str:
+        parsed = _parse_iso_date(str(d_str)[:10])
+        if parsed:
+            record["date"] = parsed
+
+    record["raw_json"] = json.dumps(raw, ensure_ascii=False, default=str)
+    return record
 
 
 def _parse_iso_date(text: str) -> Optional[date]:
@@ -214,6 +212,8 @@ def _parse_iso_date(text: str) -> Optional[date]:
 def _to_float(value: Any) -> Optional[float]:
     try:
         if value is None:
+            return None
+        if isinstance(value, str) and value.strip() in ("", "--", "undefined", "null"):
             return None
         return float(value)
     except (TypeError, ValueError):

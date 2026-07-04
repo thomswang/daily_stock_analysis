@@ -833,7 +833,10 @@ def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
         df = repo.load_merged_df(stock_code, start, end)
         if df.empty:
             return pd.DataFrame()
-        cols = ["date", "open", "high", "low", "close", "volume", "turnover_rate"]
+        if "last" in df.columns and "close" not in df.columns:
+            df = df.copy()
+            df["close"] = df["last"]
+        cols = ["date", "open", "high", "low", "close", "last", "volume", "turnover_rate"]
         return df[[c for c in cols if c in df.columns]].sort_values("date").reset_index(drop=True)
     except Exception as exc:  # noqa: BLE001 - 缓存读取失败不应中断预测
         logger.debug("读取 %s 的本地缓存失败，将走网络: %s", stock_code, exc)

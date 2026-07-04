@@ -254,13 +254,15 @@ class StockRepository:
                             StockDaily.open,
                             StockDaily.high,
                             StockDaily.low,
-                            StockDaily.close,
+                            StockDaily.last,
                             StockDaily.volume,
                             StockDaily.amount,
-                            StockDaily.pct_chg,
+                            StockDaily.exchange,
                             StockDailyQuote.turnover_rate,
                             StockDailyQuote.float_shares,
                             StockDailyQuote.volume_ratio,
+                            StockDailyQuote.change,
+                            StockDailyQuote.change_percent,
                         )
                         .select_from(StockDaily)
                         .outerjoin(
@@ -283,6 +285,8 @@ class StockRepository:
                     chunk["code"] = chunk["code"].astype(str).str.upper()
                     for code, group in chunk.groupby("code", sort=False):
                         g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
+                        if "last" in g.columns:
+                            g["close"] = g["last"]
                         result[str(code).upper()] = g
         except Exception as exc:
             logger.error("批量 JOIN 读取失败: %s", exc)

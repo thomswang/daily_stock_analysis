@@ -23,19 +23,25 @@ class TestTrainingBulkLoad(unittest.TestCase):
         self.repo = StockRepository(self.db)
 
         kline_a = pd.DataFrame([
-            {"date": "2024-01-02", "open": 10, "high": 11, "low": 9, "close": 10.5,
-             "volume": 1000, "amount": 10000, "pct_chg": 1.0},
-            {"date": "2024-01-03", "open": 10.5, "high": 11, "low": 10, "close": 10.8,
-             "volume": 1100, "amount": 11000, "pct_chg": 2.0},
+            {"date": "2024-01-02", "open": 10, "high": 11, "low": 9, "last": 10.5,
+             "volume": 1000, "amount": 10000, "exchange": None},
+            {"date": "2024-01-03", "open": 10.5, "high": 11, "low": 10, "last": 10.8,
+             "volume": 1100, "amount": 11000, "exchange": None},
         ])
         kline_b = pd.DataFrame([
-            {"date": "2024-01-02", "open": 20, "high": 21, "low": 19, "close": 20.5,
-             "volume": 2000, "amount": 20000, "pct_chg": 0.5},
+            {"date": "2024-01-02", "open": 20, "high": 21, "low": 19, "last": 20.5,
+             "volume": 2000, "amount": 20000, "exchange": None},
         ])
         self.db.save_daily_data(kline_a, "600519", data_source="test")
         self.db.save_daily_data(kline_b, "000001", data_source="test")
         self.db.save_daily_quote_data(
-            [{"date": date(2024, 1, 2), "turnover_rate": 0.3, "float_shares": 1e9}],
+            [{
+                "date": date(2024, 1, 2),
+                "turnover_rate": 0.3,
+                "float_shares": 1e9,
+                "change": 1.0,
+                "raw_json": "{}",
+            }],
             "600519",
             data_source="test",
         )
