@@ -33,7 +33,6 @@ class TestTrainingBulkLoad(unittest.TestCase):
                     "turnover_rate": 0.3,
                     "float_shares": 1e9,
                     "change": 1.0,
-                    "raw_json": "{}",
                 },
                 {
                     "date": date(2024, 1, 3),
@@ -44,7 +43,6 @@ class TestTrainingBulkLoad(unittest.TestCase):
                     "volume": 1100.0,
                     "amount": 11000.0,
                     "turnover_rate": 0.25,
-                    "raw_json": "{}",
                 },
             ],
             "600519",
@@ -59,7 +57,6 @@ class TestTrainingBulkLoad(unittest.TestCase):
                 "price": 20.5,
                 "volume": 2000.0,
                 "amount": 20000.0,
-                "raw_json": "{}",
             }],
             "000001",
             data_source="test",

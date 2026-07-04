@@ -152,9 +152,9 @@ def _quote_column(name: str):
 
 class StockDailyQuote(Base):
     """
-    A 股 westock quote --date 日线表（精简列 + raw_json）。
+    A 股 westock quote --date 日线表（结构化列，无 raw_json）。
 
-    单表 code+date；约 35 业务列；全市场原始 JSON 在 raw_json 备查。
+    单表 code+date；约 35 业务列 + metadata。
     """
     __tablename__ = "stock_daily_quote"
 
@@ -163,7 +163,6 @@ class StockDailyQuote(Base):
     date = Column(Date, nullable=False, index=True)
 
     data_source = Column(String(50), default="TencentQuote")
-    raw_json = Column(Text)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -1022,7 +1021,7 @@ class LLMUsage(Base):
 
 
 # 行情表 schema 升级时重建（用户确认可清空旧 K 线/quote 数据）
-_WESTOCK_MARKET_SCHEMA_VERSION = "2026-07-04-a-share-quote-slim"
+_WESTOCK_MARKET_SCHEMA_VERSION = "2026-07-04-quote-no-raw-json"
 
 _LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
     "provider_usage_json": "TEXT",
@@ -1565,7 +1564,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             session.merge(
                 DatabaseSchemaMigration(
                     version=_WESTOCK_MARKET_SCHEMA_VERSION,
-                    description="A-share quote slim columns; single stock_daily_quote table",
+                    description="A-share quote columns only; no raw_json blob",
                 )
             )
             session.commit()
@@ -2812,10 +2811,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     )
                 else:
                     payload[field] = self._normalize_sql_value(item.get(field))
-            raw_json = item.get("raw_json")
-            if raw_json is None and isinstance(item, dict):
-                raw_json = json.dumps(item, ensure_ascii=False, default=str)
-            payload["raw_json"] = raw_json
             by_date[row_date] = payload
 
         rows = list(by_date.values())
@@ -2845,7 +2840,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     stmt = sqlite_insert(StockDailyQuote).values(chunk)
                     excluded = stmt.excluded
                     update_map = {f: getattr(excluded, f) for f in quote_fields}
-                    update_map["raw_json"] = excluded.raw_json
                     update_map["data_source"] = excluded.data_source
                     update_map["updated_at"] = excluded.updated_at
                     if not overwrite:

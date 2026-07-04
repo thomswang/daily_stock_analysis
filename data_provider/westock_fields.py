@@ -2,7 +2,7 @@
 """
 A 股 quote --date 持久化字段（对齐 westock test/index.html，去掉港股/美股/kline 冗余列）。
 
-权威存储：stock_daily_quote（code+date 单表；raw_json 保留 westock 原始 JSON 备查）。
+权威存储：stock_daily_quote（code+date 单表；仅结构化列，不存 raw_json）。
 """
 
 from __future__ import annotations

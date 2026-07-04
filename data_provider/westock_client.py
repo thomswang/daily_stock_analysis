@@ -251,7 +251,6 @@ def parse_quote_snapshot(
         if parsed:
             record["date"] = parsed
 
-    record["raw_json"] = json.dumps(raw, ensure_ascii=False, default=str)
     return record
 
 
