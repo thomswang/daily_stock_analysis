@@ -24,7 +24,6 @@ class DailyKlineService:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db = db_manager or DatabaseManager.get_instance()
         self.adj = os.getenv("WESTOCK_KLINE_ADJ", DEFAULT_KLINE_ADJ)
-        self.sleep_after = float(os.getenv("WESTOCK_KLINE_SLEEP", "0.05"))
 
     def fetch_bars(
         self,

@@ -223,7 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "示例:\n"
             "  python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 \\\n"
-            "    --progress data/kline_progress_2021_2022.json --sleep 0.05 --retry 2 --adj qfq\n"
+            "    --progress data/kline_progress_2021_2022.json --retry 2 --adj qfq\n"
         ),
     )
     add_code_source_args(kline)
@@ -234,7 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
             mode="full",
             fresh_days=4,
             retry=2,
-            sleep=0.05,
+            sleep=0.0,
             progress=os.path.join("data", "kline_backfill_progress.json"),
         ),
     )

@@ -12,10 +12,14 @@
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
-export WESTOCK_KLINE_SLEEP=0.05
 export TRAIN_BAR_SOURCE=kline
 ```
+
+westock CLI 已内置在 `.claude/skills/westock-data/`，**一般不必**再设 `WESTOCK_DATA_DIR`。
+若要用仓库外另一份 westock-data，再 `export WESTOCK_DATA_DIR=...` 覆盖。
+
+> **无需 `--sleep`**：kline 每只股票整段只调 1 次 westock（不像 quote 逐日循环）。默认 `--sleep 0`。
+> 若 3 终端并行写 SQLite 出现 `database is locked`，再加 `--sleep 0.2` 或稍后 `--retry-failed`。
 
 ---
 
@@ -27,24 +31,21 @@ export TRAIN_BAR_SOURCE=kline
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --retry 2 --adj qfq
 ```
 
 ### 终端 2：2023–2024
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill.py kline --all --mode range --start 2023-01-01 --end 2024-12-31 --progress data/kline_progress_2023_2024.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --mode range --start 2023-01-01 --end 2024-12-31 --progress data/kline_progress_2023_2024.json --retry 2 --adj qfq
 ```
 
 ### 终端 3：2025–2026
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill.py kline --all --mode range --start 2025-01-01 --end 2026-07-03 --progress data/kline_progress_2025_2026.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --mode range --start 2025-01-01 --end 2026-07-03 --progress data/kline_progress_2025_2026.json --retry 2 --adj qfq
 ```
 
 > 2026 的 `--end` 按实际最新交易日调整（如 `2026-07-04`）。
@@ -55,8 +56,7 @@ python backfill.py kline --all --mode range --start 2025-01-01 --end 2026-07-03 
 
 ```bash
 cd e:/analysis/daily_stock_analysis
-export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill.py kline --all --limit 20 --start 2024-01-01 --end 2024-12-31 --progress data/kline_progress_test.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --limit 20 --start 2024-01-01 --end 2024-12-31 --progress data/kline_progress_test.json --retry 2 --adj qfq
 ```
 
 ---
@@ -78,7 +78,7 @@ python backfill.py kline --progress-status --progress data/kline_progress_2021_2
 仅重试失败项：
 
 ```bash
-python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --sleep 0.05 --retry 2 --adj qfq --retry-failed
+python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --retry 2 --adj qfq --retry-failed
 ```
 
 ---
@@ -88,5 +88,5 @@ python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 
 - 共 **5207** 只 A 股；上市日晚于 `--start` 的会从上市日起拉。
 - 台账：`data/kline_progress_*.json`，每完成一只写一次，可随时 Ctrl+C 中断。
 - **同一 progress 文件只跑一个进程**；3 个终端对应 3 个不同 progress 文件。
-- 多进程写同一 SQLite 若出现 `database is locked`，可把 `--sleep` 调到 `0.2`，或稍后 `--retry-failed`。
+- kline 与 quote 不同：**整段 1 次 node 请求/股/段**，默认不限流；quote 逐日才需要 `--sleep 0.1`。
 - 训练默认读 kline：`export TRAIN_BAR_SOURCE=kline`（与 quote 表分离）。

@@ -42,8 +42,10 @@ def resolve_westock_index_js() -> Optional[str]:
             return str(candidate)
 
     here = Path(__file__).resolve()
+    repo_root = here.parents[1]
     candidates = [
-        here.parents[2].parent / "westock-data" / "scripts" / "index.js",
+        repo_root / ".claude" / "skills" / "westock-data" / "scripts" / "index.js",
+        repo_root.parent / "westock-data" / "scripts" / "index.js",
         here.parents[1] / "westock-data" / "scripts" / "index.js",
         Path.cwd().parent / "westock-data" / "scripts" / "index.js",
     ]

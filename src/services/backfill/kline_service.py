@@ -47,7 +47,7 @@ class KlineBackfillService:
         start_date: str = DEFAULT_START_DATE,
         end_date: Optional[str] = None,
         mode: str = "full",
-        sleep: float = 0.05,
+        sleep: float = 0.0,
         retry: int = 1,
         fresh_days: int = 4,
         force: bool = False,
