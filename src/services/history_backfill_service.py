@@ -9,20 +9,10 @@
 
 设计要点（与主分析/预测/训练解耦，复用同一套缓存）：
 1. **代码清单**：默认读 stocks.index.json，筛选 A 股（country=CN & type=stock）。
-2. **拉取（分两层、分两表、腾讯专用）**：
-   - 第 1 层：TencentFetcher fqkline → stock_daily（时间序列 OHLCV，source 锁定无 failover）
-   - 第 2 层：Tencent quote --date → stock_daily_quote（截面，含换手率/流通股本）
-   - 编排入口：DailyIngestService（src/ingest/）
-3. **落库**：StockRepository.save_dataframe()（按 code+date 幂等 upsert）。
-4. **断点续传**：DB 为真相源（get_coverage 查已存最早/最晚日期）+ JSON 进度台账
-   记录每只票的状态/行数/错误，随时中断重跑自动跳过已完成的。
-5. **三种模式**：
-   - full：对每只票按 [start, today] 整段拉取（首次建库 / 修复历史缺口）。
-   - incremental：只补每只票「已存最新日期之后」的缺口（日常维护，请求少）。
-   - smart：按 DB 已有覆盖自动算前后缺口——start<已存最早则往前补历史、
-     end>已存最新则往后补增量。适合“先拉近两年、以后再把 start 往前推补更早历史”，
-     零重复请求、幂等、可中断续传。
-6. **容错/限流**：单只失败不影响整体（记录 error）；每次请求间 sleep 防封禁。
+2. **采集**：`DailyIngestService`（src/ingest/）统一编排两层腾讯接口 → 两张表。
+3. **断点续传**：DB 覆盖 + JSON 进度台账。
+4. **模式**：full / incremental / smart（见 run 文档）。
+5. **限流**：单只失败不中断整体；请求间 sleep。
 
 ⚠️ 数据仅供技术研究，不构成任何投资建议。
 """
@@ -159,15 +149,6 @@ class HistoryBackfillService:
             self._ingest = DailyIngestService(self.repo)
         return self._ingest
 
-    @property
-    def manager(self):
-        """兼容旧调用；新回填路径请用 self.ingest（腾讯锁定，无 failover）。"""
-        if getattr(self, "_manager", None) is None:
-            from data_provider.base import DataFetcherManager
-
-            self._manager = DataFetcherManager()
-        return self._manager
-
     # ---- 代码清单 ----
     def load_all_cn_codes(self, index_path: Optional[str] = None) -> List[str]:
         """从 stocks.index.json 读取全部 A 股代码（country=CN & type=stock & 已上市）。"""
@@ -298,7 +279,6 @@ class HistoryBackfillService:
         stats = {
             "total": total, "fetched": 0, "skipped": 0,
             "failed": 0, "empty": 0, "rows_added": 0,
-            "turnover_rows": 0,
             "quote_rows": 0,
         }
 
@@ -418,21 +398,20 @@ class HistoryBackfillService:
             return {"action": "empty"}
 
         quote_rows = 0
-        if _is_cn_a_share(code):
-            quote_span_start = min(s for s, _ in segments)
-            quote_span_end = max(e for _, e in segments)
-            try:
-                q = self.ingest.ingest_quote(
-                    code, start=quote_span_start, end=quote_span_end,
-                )
-                quote_rows = q.quote_added
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "%s quote 截面回填失败 [%s~%s]: %s",
-                    code, quote_span_start, quote_span_end, exc,
-                )
-            if sleep > 0:
-                time.sleep(sleep)
+        quote_span_start = min(s for s, _ in segments)
+        quote_span_end = max(e for _, e in segments)
+        try:
+            q = self.ingest.ingest_quote(
+                code, start=quote_span_start, end=quote_span_end,
+            )
+            quote_rows = q.quote_added
+        except Exception as exc:  # noqa: BLE001 - 截面失败不废掉 K 线
+            logger.warning(
+                "%s quote 截面回填失败 [%s~%s]: %s",
+                code, quote_span_start, quote_span_end, exc,
+            )
+        if sleep > 0:
+            time.sleep(sleep)
 
         cov2 = self.repo.get_coverage(code)
         return {
@@ -508,14 +487,6 @@ class HistoryBackfillService:
             if attempt < retry:
                 time.sleep(0.5 * (attempt + 1))
         return None, last_err
-
-
-def _is_cn_a_share(code: str) -> bool:
-    """是否为 A 股 6 位数字代码（含北交所）。"""
-    from data_provider.base import normalize_stock_code
-
-    plain = normalize_stock_code(code)
-    return plain.isdigit() and len(plain) == 6
 
 
 def _parse_date(s: str) -> Optional[date]:

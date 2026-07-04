@@ -1,14 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-行情截面回填（第 2 层：quote --date → stock_daily_quote）。
+行情截面采集（quote --date → stock_daily_quote）。
 
-与 stock_daily（kline 时间序列）分表存储，解决 westock 两套接口的核心矛盾：
-  - kline：一次拉 N 天 OHLCV（8 列），写入 stock_daily
-  - quote --date：单日 40+ 列截面（含逐日 turnover_rate / float_shares），
-    需按交易日循环，写入 stock_daily_quote
-
-对齐 westock-data/test/index.html runDailyK()：并发分批调 quote --date。
-训练读数时在 prediction_service 里 join 两表取 turnover_rate。
+由 DailyIngestService 在回填流程中调用；无独立 CLI。
 """
 
 from __future__ import annotations
