@@ -2,7 +2,7 @@
 
 数据源：`westock kline --fq qfq` → 表 `stock_daily_kline`（前复权 OHLCV，整段拉取，速度快）
 
-脚本入口：`backfill_kline.py`
+统一入口：`python backfill.py kline ...`
 
 ---
 
@@ -28,7 +28,7 @@ export TRAIN_BAR_SOURCE=kline
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_kline.py --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --sleep 0.05 --retry 2 --adj qfq
 ```
 
 ### 终端 2：2023–2024
@@ -36,7 +36,7 @@ python backfill_kline.py --all --mode range --start 2021-01-01 --end 2022-12-31 
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_kline.py --all --mode range --start 2023-01-01 --end 2024-12-31 --progress data/kline_progress_2023_2024.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --mode range --start 2023-01-01 --end 2024-12-31 --progress data/kline_progress_2023_2024.json --sleep 0.05 --retry 2 --adj qfq
 ```
 
 ### 终端 3：2025–2026
@@ -44,7 +44,7 @@ python backfill_kline.py --all --mode range --start 2023-01-01 --end 2024-12-31 
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_kline.py --all --mode range --start 2025-01-01 --end 2026-07-03 --progress data/kline_progress_2025_2026.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --mode range --start 2025-01-01 --end 2026-07-03 --progress data/kline_progress_2025_2026.json --sleep 0.05 --retry 2 --adj qfq
 ```
 
 > 2026 的 `--end` 按实际最新交易日调整（如 `2026-07-04`）。
@@ -56,7 +56,7 @@ python backfill_kline.py --all --mode range --start 2025-01-01 --end 2026-07-03 
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_kline.py --all --limit 20 --start 2024-01-01 --end 2024-12-31 --progress data/kline_progress_test.json --sleep 0.05 --retry 2 --adj qfq
+python backfill.py kline --all --limit 20 --start 2024-01-01 --end 2024-12-31 --progress data/kline_progress_test.json --sleep 0.05 --retry 2 --adj qfq
 ```
 
 ---
@@ -66,19 +66,19 @@ python backfill_kline.py --all --limit 20 --start 2024-01-01 --end 2024-12-31 --
 查看进度：
 
 ```bash
-python backfill_kline.py --progress-status --progress data/kline_progress_2021_2022.json
+python backfill.py kline --progress-status --progress data/kline_progress_2021_2022.json
 ```
 
 中断后续传（与原命令完全相同，已完成股票自动跳过）：
 
 ```bash
-# 重新粘贴对应终端的那条 backfill_kline.py 命令即可
+# 重新粘贴对应终端的那条 backfill.py kline 命令即可
 ```
 
 仅重试失败项：
 
 ```bash
-python backfill_kline.py --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --sleep 0.05 --retry 2 --adj qfq --retry-failed
+python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 --progress data/kline_progress_2021_2022.json --sleep 0.05 --retry 2 --adj qfq --retry-failed
 ```
 
 ---

@@ -46,7 +46,7 @@ from src.services.cn_list_date_store import (  # noqa: E402
     default_shard_path,
     merge_shard_files,
 )
-from src.services.history_backfill_service import HistoryBackfillService  # noqa: E402
+from src.services.backfill import CodeListLoader
 
 logger = logging.getLogger("fetch_cn_list_dates")
 
@@ -82,10 +82,9 @@ def run_fetch(
     shard_index: Optional[int] = None,
     shard_total: Optional[int] = None,
 ) -> dict:
-    service = HistoryBackfillService()
     codes = [
         normalize_stock_code(c)
-        for c in service.load_all_cn_codes(index_path=index_path)
+        for c in CodeListLoader.load_all_cn_codes(index_path=index_path)
     ]
     if limit is not None:
         codes = codes[:limit]

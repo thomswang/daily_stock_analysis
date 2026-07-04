@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 
-from src.services.history_backfill_service import HistoryBackfillService
+from src.services.backfill import CodeListLoader
 from src.services.model_training_service import MIN_NAMES_PER_DAY
 from src.services.prediction_service import (
     FEATURE_ORDER,
@@ -59,7 +59,7 @@ def log(*a):
 # ────────────────────────────── 样本池 ──────────────────────────────
 def collect_pool(n_stocks: int, horizon: int, seed: int = 7, lookback: int = 1600):
     """构造全市场抽样的横截面样本池：X(特征) / fwd(未来H日收益) / date / code。"""
-    codes = HistoryBackfillService().load_all_cn_codes()
+    codes = CodeListLoader.load_all_cn_codes()
     rng = np.random.default_rng(seed)
     if n_stocks and n_stocks > 0:
         codes = list(rng.permutation(codes))[:n_stocks]  # 抽样

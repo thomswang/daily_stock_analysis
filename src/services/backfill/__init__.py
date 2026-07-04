@@ -1,14 +1,29 @@
-# -*- coding: utf-8 -*-
-"""回填公共组件（quote / kline 共用台账、清单、区间规划）。"""
+# -*- coding: utf-8
+"""回填子系统：台账、清单、编排、quote/kline 服务。"""
 
-from .code_list import CodeListLoader
+from .code_list import BackfillError, CodeListLoader
+from .kline_service import DEFAULT_PROGRESS_PATH as KLINE_DEFAULT_PROGRESS_PATH
+from .kline_service import DEFAULT_START_DATE as KLINE_DEFAULT_START_DATE
+from .kline_service import KlineBackfillService
 from .ledger import ProgressLedger
+from .quote_service import DEFAULT_PROGRESS_PATH as QUOTE_DEFAULT_PROGRESS_PATH
+from .quote_service import DEFAULT_START_DATE as QUOTE_DEFAULT_START_DATE
+from .quote_service import QuoteBackfillService
+from .runner import run_backfill_job
 from .segment_planner import is_no_data_error, parse_date, plan_segments
 
 __all__ = [
+    "BackfillError",
     "CodeListLoader",
+    "KlineBackfillService",
+    "KLINE_DEFAULT_PROGRESS_PATH",
+    "KLINE_DEFAULT_START_DATE",
     "ProgressLedger",
+    "QuoteBackfillService",
+    "QUOTE_DEFAULT_PROGRESS_PATH",
+    "QUOTE_DEFAULT_START_DATE",
     "is_no_data_error",
     "parse_date",
     "plan_segments",
+    "run_backfill_job",
 ]

@@ -2,7 +2,7 @@
 
 数据源：`westock quote --date` → 表 `stock_daily_quote`（不复权，40+ 字段，较慢，适合放采集机跑）
 
-脚本入口：`backfill_history.py`
+统一入口：`python backfill.py quote ...`
 
 ---
 
@@ -30,7 +30,7 @@ export WESTOCK_QUOTE_BATCH=3
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_history.py --all --mode range --start 2021-01-01 --end 2021-12-31 --progress data/progress_2021.json --sleep 0.1 --retry 2
+python backfill.py quote --all --mode range --start 2021-01-01 --end 2021-12-31 --progress data/progress_2021.json --sleep 0.1 --retry 2
 ```
 
 ### 终端 2：2022
@@ -38,7 +38,7 @@ python backfill_history.py --all --mode range --start 2021-01-01 --end 2021-12-3
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_history.py --all --mode range --start 2022-01-01 --end 2022-12-31 --progress data/progress_2022.json --sleep 0.1 --retry 2
+python backfill.py quote --all --mode range --start 2022-01-01 --end 2022-12-31 --progress data/progress_2022.json --sleep 0.1 --retry 2
 ```
 
 ### 终端 3：2023
@@ -46,7 +46,7 @@ python backfill_history.py --all --mode range --start 2022-01-01 --end 2022-12-3
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_history.py --all --mode range --start 2023-01-01 --end 2023-12-31 --progress data/progress_2023.json --sleep 0.1 --retry 2
+python backfill.py quote --all --mode range --start 2023-01-01 --end 2023-12-31 --progress data/progress_2023.json --sleep 0.1 --retry 2
 ```
 
 ### 终端 4：2024
@@ -54,7 +54,7 @@ python backfill_history.py --all --mode range --start 2023-01-01 --end 2023-12-3
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_history.py --all --mode range --start 2024-01-01 --end 2024-12-31 --progress data/progress_2024.json --sleep 0.1 --retry 2
+python backfill.py quote --all --mode range --start 2024-01-01 --end 2024-12-31 --progress data/progress_2024.json --sleep 0.1 --retry 2
 ```
 
 ### 终端 5：2025
@@ -62,7 +62,7 @@ python backfill_history.py --all --mode range --start 2024-01-01 --end 2024-12-3
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_history.py --all --mode range --start 2025-01-01 --end 2025-12-31 --progress data/progress_2025.json --sleep 0.1 --retry 2
+python backfill.py quote --all --mode range --start 2025-01-01 --end 2025-12-31 --progress data/progress_2025.json --sleep 0.1 --retry 2
 ```
 
 ### 终端 6：2026
@@ -70,7 +70,7 @@ python backfill_history.py --all --mode range --start 2025-01-01 --end 2025-12-3
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_history.py --all --mode range --start 2026-01-01 --end 2026-07-03 --progress data/progress_2026.json --sleep 0.1 --retry 2
+python backfill.py quote --all --mode range --start 2026-01-01 --end 2026-07-03 --progress data/progress_2026.json --sleep 0.1 --retry 2
 ```
 
 > 2026 的 `--end` 按实际最新交易日调整（如 `2026-07-04`）。
@@ -82,7 +82,7 @@ python backfill_history.py --all --mode range --start 2026-01-01 --end 2026-07-0
 ```bash
 cd e:/analysis/daily_stock_analysis
 export WESTOCK_DATA_DIR=e:/analysis/westock-data
-python backfill_history.py --all --limit 20 --start 2024-01-01 --progress data/progress_test.json --sleep 0.1 --retry 2
+python backfill.py quote --all --limit 20 --start 2024-01-01 --progress data/progress_test.json --sleep 0.1 --retry 2
 ```
 
 ---
@@ -92,19 +92,19 @@ python backfill_history.py --all --limit 20 --start 2024-01-01 --progress data/p
 查看进度：
 
 ```bash
-python backfill_history.py --progress-status --progress data/progress_2021.json
+python backfill.py quote --progress-status --progress data/progress_2021.json
 ```
 
 中断后续传（与原命令完全相同，已完成股票自动跳过）：
 
 ```bash
-# 重新粘贴对应终端的那条 backfill_history.py 命令即可
+# 重新粘贴对应终端的那条 backfill.py quote 命令即可
 ```
 
 仅重试失败项：
 
 ```bash
-python backfill_history.py --all --mode range --start 2021-01-01 --end 2021-12-31 --progress data/progress_2021.json --sleep 0.1 --retry 2 --retry-failed
+python backfill.py quote --all --mode range --start 2021-01-01 --end 2021-12-31 --progress data/progress_2021.json --sleep 0.1 --retry 2 --retry-failed
 ```
 
 ---

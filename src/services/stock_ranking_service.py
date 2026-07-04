@@ -94,7 +94,7 @@ class StockRankingService:
             lookback_days=lookback_days, resolve_name=False, refresh=False,
         )
         if not scored:
-            raise StockRankingError("全市场打分结果为空（缓存数据不足？先跑 backfill_history.py）")
+            raise StockRankingError("全市场打分结果为空（缓存数据不足？先跑 python backfill.py quote/kline）")
 
         # 附行业 + 名称（免联网）；打分日取多数票的最新交易日
         for it in scored:
@@ -213,20 +213,20 @@ class StockRankingService:
     # ───────────────────────── 内部工具 ─────────────────────────
     @staticmethod
     def _load_universe() -> List[str]:
-        from src.services.history_backfill_service import HistoryBackfillService
+        from src.services.backfill import CodeListLoader
 
         try:
-            return HistoryBackfillService().load_all_cn_codes()
+            return CodeListLoader.load_all_cn_codes()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[rank] 载入全市场代码失败：%s", exc)
             return []
 
     @staticmethod
     def _load_name_map() -> Dict[str, str]:
-        from src.services.history_backfill_service import HistoryBackfillService
+        from src.services.backfill import CodeListLoader
 
         try:
-            return HistoryBackfillService().load_cn_name_map()
+            return CodeListLoader.load_cn_name_map()
         except Exception:  # noqa: BLE001
             return {}
 

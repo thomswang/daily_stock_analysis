@@ -85,9 +85,9 @@ def _resolve_symbols(args: argparse.Namespace) -> List[str]:
         return codes
     if getattr(args, "all", False):
         # 复用回填工具的全市场代码清单加载器（读 stocks.index.json）
-        from src.services.history_backfill_service import HistoryBackfillService
+        from src.services.backfill import CodeListLoader
 
-        codes = HistoryBackfillService().load_all_cn_codes(index_path=args.index_path)
+        codes = CodeListLoader.load_all_cn_codes(index_path=args.index_path)
         if args.limit:
             codes = codes[: args.limit]
         if not codes:
