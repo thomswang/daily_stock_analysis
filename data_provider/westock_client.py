@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .base import normalize_stock_code, is_bse_code
-from .westock_fields import (
-    WESTOCK_QUOTE_FLOAT_FIELDS,
+from data_provider.westock_fields import (
+    WESTOCK_A_SHARE_QUOTE_FLOAT_FIELDS,
+    WESTOCK_A_SHARE_QUOTE_TEXT_FIELDS,
     WESTOCK_QUOTE_PERSIST_FIELDS,
     WESTOCK_QUOTE_TEXT_FIELDS,
 )
@@ -171,7 +172,7 @@ def fetch_quote_snapshots_range(
 def parse_quote_to_record(raw: Dict[str, Any]) -> Dict[str, Optional[float]]:
     """兼容旧调用：返回 parse_quote_snapshot 的数值子集。"""
     snap = parse_quote_snapshot(raw)
-    return {k: snap.get(k) for k in WESTOCK_QUOTE_FLOAT_FIELDS if k in snap}
+    return {k: snap.get(k) for k in WESTOCK_A_SHARE_QUOTE_FLOAT_FIELDS if k in snap}
 
 
 def parse_quote_snapshot(
@@ -182,13 +183,13 @@ def parse_quote_snapshot(
     """将 quote --date JSON 映射为 stock_daily_quote 行（键名与 index.html FIELD_DICT 一致）。"""
     record: Dict[str, Any] = {}
 
-    for key in WESTOCK_QUOTE_FLOAT_FIELDS:
+    for key in WESTOCK_A_SHARE_QUOTE_FLOAT_FIELDS:
         val = _to_float(raw.get(key))
         if key in ("float_shares", "total_shares") and val is not None and val <= 0:
             val = None
         record[key] = val
 
-    for key in WESTOCK_QUOTE_TEXT_FIELDS:
+    for key in WESTOCK_A_SHARE_QUOTE_TEXT_FIELDS:
         val = raw.get(key)
         record[key] = str(val).strip() if val is not None and str(val).strip() else None
 
@@ -199,9 +200,6 @@ def parse_quote_snapshot(
             record["date"] = parsed
 
     record["raw_json"] = json.dumps(raw, ensure_ascii=False, default=str)
-    # 训练/读库兼容：westock 截面收盘价字段为 price
-    if record.get("last") is None and record.get("price") is not None:
-        record["last"] = record["price"]
     return record
 
 

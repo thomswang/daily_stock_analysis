@@ -49,6 +49,8 @@ def test_parse_quote_to_record() -> None:
     assert rec["change"] == 4.42
     assert rec["date"].isoformat() == "2026-06-25"
     assert "raw_json" in rec
+    assert "lot" not in rec
+    assert "pre_market_price" not in rec
 
 
 def test_fetch_quote_snapshots_range_batches() -> None:

@@ -152,9 +152,9 @@ def _quote_column(name: str):
 
 class StockDailyQuote(Base):
     """
-    westock quote --date 日线唯一权威表（对齐 test/index.html FIELD_DICT）。
+    A 股 westock quote --date 日线表（精简列 + raw_json）。
 
-    按 code+date 一行；逐日循环拉取；raw_json 保留 CLI 原始 JSON。
+    单表 code+date；约 35 业务列；全市场原始 JSON 在 raw_json 备查。
     """
     __tablename__ = "stock_daily_quote"
 
@@ -1022,7 +1022,7 @@ class LLMUsage(Base):
 
 
 # 行情表 schema 升级时重建（用户确认可清空旧 K 线/quote 数据）
-_WESTOCK_MARKET_SCHEMA_VERSION = "2026-07-04-westock-field-alignment"
+_WESTOCK_MARKET_SCHEMA_VERSION = "2026-07-04-a-share-quote-slim"
 
 _LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
     "provider_usage_json": "TEXT",
@@ -1549,29 +1549,27 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return unique_indexes
 
     def _migrate_westock_market_schema(self) -> None:
-        """行情表结构与 westock index.html 对齐；版本变更时 DROP 重建（清空旧数据）。"""
+        """A 股 quote 精简列；版本变更时重建 stock_daily_quote（清空 quote 数据）。"""
         with self._SessionLocal() as session:
             applied = session.get(DatabaseSchemaMigration, _WESTOCK_MARKET_SCHEMA_VERSION)
         if applied is not None:
             return
 
         logger.warning(
-            "[schema] 重建 stock_daily / stock_daily_quote（westock 字段对齐，旧行情数据将清空）"
+            "[schema] 重建 stock_daily_quote（A 股精简列，旧 quote 数据将清空）"
         )
         with self._engine.begin() as conn:
             conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily_quote")
-            conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily")
-        StockDaily.__table__.create(self._engine, checkfirst=True)
         StockDailyQuote.__table__.create(self._engine, checkfirst=True)
         with self._SessionLocal() as session:
             session.merge(
                 DatabaseSchemaMigration(
                     version=_WESTOCK_MARKET_SCHEMA_VERSION,
-                    description="westock index.html field alignment for kline + quote",
+                    description="A-share quote slim columns; single stock_daily_quote table",
                 )
             )
             session.commit()
-        logger.info("[schema] stock_daily / stock_daily_quote 已重建")
+        logger.info("[schema] stock_daily_quote 已重建（A 股精简列）")
 
     def _ensure_llm_usage_telemetry_columns(self) -> None:
         """Add nullable P0a usage telemetry columns to existing SQLite DBs."""

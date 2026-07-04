@@ -272,9 +272,7 @@ class StockRepository:
                             "change": getattr(row, "change", None),
                             "change_percent": getattr(row, "change_percent", None),
                         }
-                        last = getattr(row, "last", None)
-                        if last is None:
-                            last = getattr(row, "price", None)
+                        last = getattr(row, "price", None)
                         rec["last"] = last
                         rec["close"] = last
                         records.append(rec)
