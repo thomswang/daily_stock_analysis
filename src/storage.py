@@ -61,7 +61,7 @@ from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
-CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
+CURRENT_SCHEMA_VERSION = "2026-07-04-drop-stock-daily-redundant-columns"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 
 # SQLAlchemy ORM 基类
@@ -124,25 +124,13 @@ class StockDaily(Base):
     amount = Column(Float)  # 成交额（元）
     pct_chg = Column(Float)  # 涨跌幅（%）
 
-    # 原始行情字段（数据源直接给出，属"原始层"真相，不再丢弃）
-    change_amount = Column(Float)   # 涨跌额（元）
-    amplitude = Column(Float)       # 振幅（%）
-
-    # ⚠️ DEPRECATED（保留列仅为兼容旧库读数，不再由 kline 写入）：
-    # 换手率 / 流通股本 / 量比 属"截面口径"，各源计算方式不一致（如新浪历史 kline
-    # 用当日流通股本自算 vs quote --date 权威值），统一由 stock_daily_quote 承接。
-    # 详见 westock-data/test/server.js 的 kline vs quote --date 分层说明。
-    turnover_rate = Column(Float)   # DEPRECATED, see stock_daily_quote.turnover_rate
-    float_shares = Column(Float)    # DEPRECATED, see stock_daily_quote.float_shares
-
-    # 技术指标
+    # 技术指标（由 K 线 OHLCV 派生）
     ma5 = Column(Float)
     ma10 = Column(Float)
     ma20 = Column(Float)
-    volume_ratio = Column(Float)  # DEPRECATED, see stock_daily_quote.volume_ratio
-    
+
     # 数据来源
-    data_source = Column(String(50))  # 记录数据来源（如 AkshareFetcher）
+    data_source = Column(String(50))  # 记录数据来源（如 TencentFetcher）
     
     # 更新时间
     created_at = Column(DateTime, default=datetime.now)
@@ -172,7 +160,6 @@ class StockDaily(Base):
             'ma5': self.ma5,
             'ma10': self.ma10,
             'ma20': self.ma20,
-            'volume_ratio': self.volume_ratio,
             'data_source': self.data_source,
         }
 
@@ -1056,13 +1043,14 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
-# stock_daily 原始行情扩展列：给旧库补齐（SQLite ALTER TABLE ADD COLUMN）
-_STOCK_DAILY_EXTRA_COLUMN_SQL: Dict[str, str] = {
-    "change_amount": "FLOAT",
-    "amplitude": "FLOAT",
-    "turnover_rate": "FLOAT",
-    "float_shares": "FLOAT",
-}
+# stock_daily 已删除的冗余列（截面字段在 stock_daily_quote；旧库启动时 DROP）
+_REDUNDANT_STOCK_DAILY_COLUMNS = (
+    "turnover_rate",
+    "float_shares",
+    "volume_ratio",
+    "change_amount",
+    "amplitude",
+)
 
 _LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
     "provider_usage_json": "TEXT",
@@ -1435,7 +1423,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # 创建所有表
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
-            self._ensure_stock_daily_columns()
+            self._drop_stock_daily_redundant_columns()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1461,7 +1449,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         session = self._SessionLocal()
         values = {
             "version": CURRENT_SCHEMA_VERSION,
-            "description": "Baseline schema created through SQLAlchemy metadata.create_all",
+            "description": "Drop redundant stock_daily columns; quote fields live in stock_daily_quote",
         }
         try:
             if self._is_sqlite_engine:
@@ -1588,53 +1576,53 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 unique_indexes.append(index_columns)
             return unique_indexes
 
-    def _ensure_stock_daily_columns(self) -> None:
-        """给已存在的 stock_daily 表补齐原始行情扩展列（涨跌额/振幅/换手率）。
-
-        新库由 metadata.create_all 直接建全；旧库缺列时用 ALTER TABLE 补齐，
-        补上的列对历史行是 NULL，需重新拉取数据才会回填。
-        """
-        if not self._is_sqlite_engine:
-            return
+    def _drop_stock_daily_redundant_columns(self) -> None:
+        """从 stock_daily 删除与 stock_daily_quote 重复或已停写的列（旧库迁移）。"""
         try:
             existing = {
                 column["name"]
                 for column in inspect(self._engine).get_columns(StockDaily.__tablename__)
             }
         except Exception as exc:
-            logger.warning(
-                "[stock_daily] 检查扩展列失败，跳过 SQLite 补列: %s", exc
-            )
+            logger.warning("[stock_daily] 检查冗余列失败，跳过 DROP: %s", exc)
             return
 
         max_retries = self._sqlite_write_retry_max
-        for column, column_type in _STOCK_DAILY_EXTRA_COLUMN_SQL.items():
-            if column in existing:
+        for column in _REDUNDANT_STOCK_DAILY_COLUMNS:
+            if column not in existing:
                 continue
             for attempt in range(max_retries + 1):
                 try:
                     with self._engine.begin() as connection:
                         connection.exec_driver_sql(
-                            f"ALTER TABLE {StockDaily.__tablename__} "
-                            f"ADD COLUMN {column} {column_type}"
+                            f"ALTER TABLE {StockDaily.__tablename__} DROP COLUMN {column}"
                         )
-                    existing.add(column)
-                    logger.info("[stock_daily] 已补列: %s %s", column, column_type)
+                    existing.discard(column)
+                    logger.info("[stock_daily] 已删除冗余列: %s", column)
                     break
                 except OperationalError as exc:
-                    if self._is_sqlite_duplicate_column_error(exc, column):
-                        existing.add(column)
+                    if self._is_sqlite_no_such_column_error(exc, column):
+                        existing.discard(column)
                         break
                     if self._is_sqlite_locked_error(exc) and attempt < max_retries:
                         delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
                         logger.warning(
-                            "[stock_daily] 补列被锁，重试: %s (%s/%s, %.2fs)",
+                            "[stock_daily] DROP 列被锁，重试: %s (%s/%s, %.2fs)",
                             column, attempt + 1, max_retries, delay,
                         )
                         if delay > 0:
                             time.sleep(delay)
                         continue
-                    raise
+                    logger.warning("[stock_daily] 删除列 %s 失败: %s", column, exc)
+                    break
+                except Exception as exc:  # noqa: BLE001 - 单列表失败不阻断启动
+                    logger.warning("[stock_daily] 删除列 %s 失败: %s", column, exc)
+                    break
+
+    @staticmethod
+    def _is_sqlite_no_such_column_error(exc: OperationalError, column: str) -> bool:
+        message = str(getattr(exc, "orig", exc)).lower()
+        return "no such column" in message and column.lower() in message
 
     def _ensure_llm_usage_telemetry_columns(self) -> None:
         """Add nullable P0a usage telemetry columns to existing SQLite DBs."""
@@ -2693,9 +2681,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         now = datetime.now()
         records_by_date: Dict[date, Dict[str, Any]] = {}
-        # kline 层严格只写 OHLCV + 派生技术指标；换手率 / 流通股本 / 量比 属"截面口径"，
-        # 各数据源（新浪历史 kline 计算值 vs quote --date 权威值）差异大，统一由
-        # stock_daily_quote 独占（对齐 westock-data/test 的 kline vs quote --date 分层）。
+        # kline 层只写 OHLCV + 派生 MA；截面字段（换手率/量比/涨跌额/振幅等）在 stock_daily_quote。
         for row in df.to_dict(orient='records'):
             row_date = self._normalize_daily_date(row.get('date'))
             records_by_date[row_date] = {
@@ -2708,16 +2694,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 'volume': self._normalize_sql_value(row.get('volume')),
                 'amount': self._normalize_sql_value(row.get('amount')),
                 'pct_chg': self._normalize_sql_value(row.get('pct_chg')),
-                'change_amount': self._normalize_sql_value(row.get('change_amount')),
-                'amplitude': self._normalize_sql_value(row.get('amplitude')),
-                # NOTE: turnover_rate / float_shares / volume_ratio 不再从 kline 落 stock_daily，
-                # 全部由 stock_daily_quote 承接；此处保留 None 以走 ORM 默认。
-                'turnover_rate': None,
-                'float_shares': None,
                 'ma5': self._normalize_sql_value(row.get('ma5')),
                 'ma10': self._normalize_sql_value(row.get('ma10')),
                 'ma20': self._normalize_sql_value(row.get('ma20')),
-                'volume_ratio': None,
                 'data_source': data_source,
                 'created_at': now,
                 'updated_at': now,
@@ -2732,8 +2711,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         def _write(session: Session) -> int:
             if self._is_sqlite_engine:
                 # SQLite has a per-statement bind-parameter limit (commonly 999).
-                # Each record has ~19 columns, so chunk upserts to stay within bounds.
-                _SQLITE_CHUNK = 40
+                # Each record has ~14 columns, so chunk upserts to stay within bounds.
+                _SQLITE_CHUNK = 55
                 # `_run_write_transaction()` opens SQLite writes with
                 # `BEGIN IMMEDIATE`, so existence checks and upsert execute
                 # within one stable write window.
@@ -2771,17 +2750,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                                 'volume': excluded.volume,
                                 'amount': excluded.amount,
                                 'pct_chg': excluded.pct_chg,
-                                # 原始行情列（涨跌额/振幅）：仅当新值非空才覆盖，避免兜底源
-                                # 把已填好的历史值抹成 NULL（防数据回退）。
-                                'change_amount': func.coalesce(
-                                    excluded.change_amount, StockDaily.change_amount
-                                ),
-                                'amplitude': func.coalesce(
-                                    excluded.amplitude, StockDaily.amplitude
-                                ),
-                                # turnover_rate / float_shares / volume_ratio 不再由 kline
-                                # 更新（口径不准），保留 stock_daily 已有列以兼容旧库读数，
-                                # 权威值来自 stock_daily_quote（quote --date）。
                                 'ma5': excluded.ma5,
                                 'ma10': excluded.ma10,
                                 'ma20': excluded.ma20,
@@ -2817,13 +2785,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     existing.volume = record['volume']
                     existing.amount = record['amount']
                     existing.pct_chg = record['pct_chg']
-                    # 原始行情列（涨跌额/振幅）：仅当新值非空才覆盖，避免兜底源把已填值抹成 NULL
-                    if record['change_amount'] is not None:
-                        existing.change_amount = record['change_amount']
-                    if record['amplitude'] is not None:
-                        existing.amplitude = record['amplitude']
-                    # turnover_rate / float_shares / volume_ratio 不再由 kline 更新，
-                    # 权威值来自 stock_daily_quote（quote --date）
                     existing.ma5 = record['ma5']
                     existing.ma10 = record['ma10']
                     existing.ma20 = record['ma20']

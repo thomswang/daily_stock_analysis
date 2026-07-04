@@ -58,8 +58,6 @@ def test_tencent_fetcher_parses_qfq_daily_response() -> None:
         "volume",
         "amount",
         "pct_chg",
-        "change_amount",
-        "amplitude",
         "ma5",
         "ma10",
         "ma20",

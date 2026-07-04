@@ -42,6 +42,7 @@ from src.services.prediction_service import (
     make_forward_return,
     make_labels,
     make_labels_relative,
+    preload_training_cache,
     train_model,
 )
 
@@ -114,15 +115,27 @@ class ModelTrainingService:
         used_symbols: List[str] = []
         all_dates: List[Any] = []
 
+        # 纯读本地库时：一次批量 JOIN 预加载，避免 5000×2 次 SQLite 往返
+        df_cache: Dict[str, pd.DataFrame] = {}
+        if not refresh:
+            try:
+                df_cache = preload_training_cache(symbols, lookback_days)
+            except Exception as exc:  # noqa: BLE001 - 失败则退回逐票读取
+                logger.warning("[train] 批量预读失败，退回逐票模式: %s", exc)
+
         for raw in symbols:
             code = (raw or "").strip()
             if not code:
                 continue
+            code_key = code.upper()
             try:
-                df, _name = _load_daily_df(
-                    code, lookback_days, use_cache=True, refresh=refresh,
-                    resolve_name=False,
-                )
+                if not refresh and code_key in df_cache:
+                    df = df_cache[code_key]
+                else:
+                    df, _name = _load_daily_df(
+                        code, lookback_days, use_cache=True, refresh=refresh,
+                        resolve_name=False,
+                    )
             except PredictionError as exc:
                 logger.warning("[train] 跳过 %s：%s", code, exc)
                 continue

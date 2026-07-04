@@ -11,8 +11,8 @@
 
 import logging
 import os
-from datetime import date
-from typing import Optional, List, Dict, Any
+from datetime import date, timedelta
+from typing import Optional, List, Dict, Any, Iterable, Tuple
 
 import pandas as pd
 from sqlalchemy import and_, desc, func, select
@@ -21,15 +21,30 @@ from src.storage import DatabaseManager, StockDaily, StockDailyQuote
 
 logger = logging.getLogger(__name__)
 
+# 训练批量预读：每批 IN 子句包含的股票数（SQLite 绑定参数上限 ~999）
+DEFAULT_TRAIN_BULK_BATCH = int(os.getenv("TRAIN_BULK_BATCH", "500"))
 
-def _legacy_turnover_fallback() -> bool:
-    """是否允许从 stock_daily 的旧 turnover_rate / float_shares / volume_ratio 列兜底读取。
+# 与 prediction_service._load_cached_df 一致：多取日历日以保证 rolling 后样本够
+def compute_training_date_range(
+    lookback_days: int,
+    *,
+    end_date: Optional[date] = None,
+) -> Tuple[date, date]:
+    end_d = end_date or date.today()
+    start_d = end_d - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
+    return start_d, end_d
 
-    默认 False——stock_daily_quote 是唯一权威源。仅在需要兼容旧库时打开：
-        export DSA_LEGACY_TURNOVER_FALLBACK=1
-    """
-    return os.getenv("DSA_LEGACY_TURNOVER_FALLBACK", "").lower() in ("1", "true", "yes")
 
+def _normalize_codes(codes: Iterable[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for raw in codes:
+        code = (raw or "").strip().upper()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        out.append(code)
+    return out
 
 class StockRepository:
     """
@@ -190,43 +205,89 @@ class StockRepository:
     ) -> List[Dict[str, Any]]:
         """K 线 + quote 截面 join（按 date 对齐，供训练/特征工程）。
 
-        权威源：换手率 / 流通股本 / 量比 来自 stock_daily_quote；
-        stock_daily 的同名列已 deprecated（详见 storage.py::StockDaily）。
-        如需兼容旧库，设置 ``DSA_LEGACY_TURNOVER_FALLBACK=1`` 打开兜底。
+        换手率 / 流通股本 / 量比 权威源：stock_daily_quote。
         """
-        daily_rows = self.get_range(code, start_date, end_date)
-        quote_rows = self.get_quote_range(code, start_date, end_date)
-        quote_by_date = {r.date: r for r in quote_rows}
-        allow_legacy = _legacy_turnover_fallback()
-        merged: List[Dict[str, Any]] = []
-        for row in daily_rows:
-            q = quote_by_date.get(row.date)
-            if q is not None:
-                turnover_rate = q.turnover_rate
-                float_shares = q.float_shares
-                volume_ratio = q.volume_ratio
-            elif allow_legacy:
-                turnover_rate = getattr(row, "turnover_rate", None)
-                float_shares = getattr(row, "float_shares", None)
-                volume_ratio = row.volume_ratio
-            else:
-                turnover_rate = None
-                float_shares = None
-                volume_ratio = None
-            merged.append({
-                "date": row.date,
-                "open": row.open,
-                "high": row.high,
-                "low": row.low,
-                "close": row.close,
-                "volume": row.volume,
-                "amount": row.amount,
-                "pct_chg": row.pct_chg,
-                "turnover_rate": turnover_rate,
-                "float_shares": float_shares,
-                "volume_ratio": volume_ratio,
-            })
-        return merged
+        df = self.load_merged_df(code, start_date, end_date)
+        if df.empty:
+            return []
+        return df.to_dict(orient="records")
+
+    def load_merged_df(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+    ) -> pd.DataFrame:
+        """单票 K 线 + quote 一次 JOIN 查询（训练/预测读缓存）。"""
+        bulk = self.load_merged_bulk(
+            [code], start_date, end_date, batch_size=1,
+        )
+        return bulk.get((code or "").strip().upper(), pd.DataFrame())
+
+    def load_merged_bulk(
+        self,
+        codes: List[str],
+        start_date: date,
+        end_date: date,
+        *,
+        batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
+    ) -> Dict[str, pd.DataFrame]:
+        """批量 K 线 LEFT JOIN quote，按 code 返回 DataFrame（训练预加载专用）。
+
+        一次 SQL 拉一批股票，避免「每票 2 次 ORM 查询」的 N+1 问题。
+        """
+        norm_codes = _normalize_codes(codes)
+        if not norm_codes:
+            return {}
+
+        batch_size = max(1, int(batch_size))
+        result: Dict[str, pd.DataFrame] = {}
+        try:
+            with self.db.get_session() as session:
+                conn = session.connection()
+                for i in range(0, len(norm_codes), batch_size):
+                    batch = norm_codes[i : i + batch_size]
+                    stmt = (
+                        select(
+                            StockDaily.code.label("code"),
+                            StockDaily.date.label("date"),
+                            StockDaily.open,
+                            StockDaily.high,
+                            StockDaily.low,
+                            StockDaily.close,
+                            StockDaily.volume,
+                            StockDaily.amount,
+                            StockDaily.pct_chg,
+                            StockDailyQuote.turnover_rate,
+                            StockDailyQuote.float_shares,
+                            StockDailyQuote.volume_ratio,
+                        )
+                        .select_from(StockDaily)
+                        .outerjoin(
+                            StockDailyQuote,
+                            and_(
+                                StockDaily.code == StockDailyQuote.code,
+                                StockDaily.date == StockDailyQuote.date,
+                            ),
+                        )
+                        .where(
+                            StockDaily.code.in_(batch),
+                            StockDaily.date >= start_date,
+                            StockDaily.date <= end_date,
+                        )
+                        .order_by(StockDaily.code, StockDaily.date)
+                    )
+                    chunk = pd.read_sql(stmt, conn)
+                    if chunk.empty:
+                        continue
+                    chunk["code"] = chunk["code"].astype(str).str.upper()
+                    for code, group in chunk.groupby("code", sort=False):
+                        g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
+                        result[str(code).upper()] = g
+        except Exception as exc:
+            logger.error("批量 JOIN 读取失败: %s", exc)
+            raise
+        return result
 
     def get_coverage(self, code: str) -> Dict[str, Any]:
         """查询 stock_daily 已存最早/最晚日期与条数。"""

@@ -144,7 +144,7 @@ class TestStorage(unittest.TestCase):
 
         self.assertIsNotNone(row)
         self.assertEqual(row.version, CURRENT_SCHEMA_VERSION)
-        self.assertIn("metadata.create_all", row.description)
+        self.assertIn("stock_daily", row.description)
 
         DatabaseManager.reset_instance()
 
@@ -786,7 +786,6 @@ class TestStorage(unittest.TestCase):
                             'ma5': 10.1,
                             'ma10': 10.2,
                             'ma20': 10.3,
-                            'volume_ratio': 1.0,
                         }
                     ]
                 ),

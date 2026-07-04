@@ -85,8 +85,7 @@ class TencentFetcher(BaseFetcher):
             )
             return _empty_daily_frame()
 
-        # 腾讯 fqkline 不含逐日换手率；qt 快照为「当前」流通股本，不能用于历史推算。
-        # 换手率由 quote --date 写入 stock_daily_quote，不在此表填充。
+        # 腾讯 fqkline 不含逐日换手率；截面字段在 stock_daily_quote。
         return df
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -96,14 +95,8 @@ class TencentFetcher(BaseFetcher):
                 normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
         if "pct_chg" not in normalized.columns:
             normalized["pct_chg"] = normalized["close"].pct_change().fillna(0.0) * 100
-        # 腾讯 K 线不含涨跌额/振幅/换手率；前两者用 OHLC 回看补算（无未来函数），
-        # 换手率由 quote --date → stock_daily_quote 分表存储。
-        prev_close = normalized["close"].shift(1)
-        normalized["change_amount"] = normalized["close"] - prev_close
-        normalized["amplitude"] = (normalized["high"] - normalized["low"]) / prev_close * 100
         keep = [
             "date", "open", "high", "low", "close", "volume", "amount", "pct_chg",
-            "change_amount", "amplitude",
         ]
         normalized = normalized[[c for c in keep if c in normalized.columns]]
         return normalized
