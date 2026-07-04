@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any, Iterable, Tuple
 import pandas as pd
 from sqlalchemy import and_, desc, func, select
 
-from src.storage import DatabaseManager, StockDaily, StockDailyQuote
+from src.storage import DatabaseManager, StockDaily, StockDailyKline, StockDailyQuote
 
 logger = logging.getLogger(__name__)
 
@@ -305,6 +305,101 @@ class StockRepository:
         except Exception as e:
             logger.error(f"查询 {code} quote 覆盖失败: {e}")
             return {"first": None, "last": None, "rows": 0}
+
+    def get_kline_coverage(
+        self,
+        code: str,
+        *,
+        adj_type: str = "qfq",
+    ) -> Dict[str, Any]:
+        """查询 stock_daily_kline 已存最早/最晚日期与条数。"""
+        try:
+            with self.db.get_session() as session:
+                first, last, cnt = session.execute(
+                    select(
+                        func.min(StockDailyKline.date),
+                        func.max(StockDailyKline.date),
+                        func.count(),
+                    ).where(
+                        and_(
+                            StockDailyKline.code == code,
+                            StockDailyKline.adj_type == adj_type,
+                        )
+                    )
+                ).one()
+            return {"first": first, "last": last, "rows": int(cnt or 0)}
+        except Exception as e:
+            logger.error("查询 %s kline 覆盖失败: %s", code, e)
+            return {"first": None, "last": None, "rows": 0}
+
+    def load_kline_bulk(
+        self,
+        codes: List[str],
+        start_date: date,
+        end_date: date,
+        *,
+        batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
+        adj_type: str = "qfq",
+    ) -> Dict[str, pd.DataFrame]:
+        """批量读 stock_daily_kline（前复权 OHLCV，供技术因子训练）。"""
+        norm_codes = _normalize_codes(codes)
+        if not norm_codes:
+            return {}
+
+        batch_size = max(1, int(batch_size))
+        result: Dict[str, pd.DataFrame] = {}
+        try:
+            with self.db.get_session() as session:
+                for i in range(0, len(norm_codes), batch_size):
+                    batch = norm_codes[i : i + batch_size]
+                    stmt = (
+                        select(StockDailyKline)
+                        .where(
+                            StockDailyKline.code.in_(batch),
+                            StockDailyKline.adj_type == adj_type,
+                            StockDailyKline.date >= start_date,
+                            StockDailyKline.date <= end_date,
+                        )
+                        .order_by(StockDailyKline.code, StockDailyKline.date)
+                    )
+                    rows = session.execute(stmt).scalars().all()
+                    if not rows:
+                        continue
+                    records: List[Dict[str, Any]] = []
+                    for row in rows:
+                        records.append({
+                            "code": row.code,
+                            "date": row.date,
+                            "open": row.open,
+                            "high": row.high,
+                            "low": row.low,
+                            "close": row.close,
+                            "volume": row.volume,
+                            "amount": row.amount,
+                            "turnover_rate": row.turnover_rate,
+                        })
+                    chunk = pd.DataFrame(records)
+                    chunk["code"] = chunk["code"].astype(str).str.upper()
+                    for code, group in chunk.groupby("code", sort=False):
+                        g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
+                        result[str(code).upper()] = g
+        except Exception as exc:
+            logger.error("批量读 kline 失败: %s", exc)
+            raise
+        return result
+
+    def load_kline_df(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+        *,
+        adj_type: str = "qfq",
+    ) -> pd.DataFrame:
+        bulk = self.load_kline_bulk(
+            [code], start_date, end_date, batch_size=1, adj_type=adj_type,
+        )
+        return bulk.get((code or "").strip().upper(), pd.DataFrame())
 
     def get_forward_bars(self, *, code: str, analysis_date: date, eval_window_days: int) -> List[StockDaily]:
         """Return forward daily bars after analysis_date, up to eval_window_days."""

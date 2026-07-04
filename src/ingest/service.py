@@ -1,11 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-日线采集编排器（westock quote --date 单表）。
+日线采集编排器（quote 截面 + kline 时间序列，分表落库）。
 
-与 westock-data/test/index.html「日K全字段」一致：
-    按工作日循环 quote --date → stock_daily_quote（40+ 字段 / 天）。
-
-训练读库后续再改；当前回填与增量只写这一张表。
+- quote --date → stock_daily_quote（不复权，40+ 字段，慢）
+- kline 整段   → stock_daily_kline（前复权 qfq，8 字段，快）
 """
 
 from __future__ import annotations
@@ -70,12 +68,23 @@ class DailyIngestService:
         start: date,
         end: date,
     ) -> IngestResult:
-        """已废弃：K 线层不再写入。请使用 ingest_quote / ingest_range。"""
-        logger.warning(
-            "%s ingest_kline 已废弃，自动转 quote --date [%s~%s]",
-            code, start, end,
+        """westock kline 整段 → stock_daily_kline。"""
+        if not is_cn_a_share(code):
+            return IngestResult(0, 0, "", None)
+        from src.ingest.westock_kline import WestockKlineIngestor
+
+        ingestor = WestockKlineIngestor(db_manager=self.repo.db)
+        result = ingestor.backfill(code, start=start, end=end)
+        logger.info(
+            "%s kline 采集完成 [%s~%s]: +%d 行",
+            code, start, end, result.rows_saved,
         )
-        return self.ingest_quote(code, start=start, end=end)
+        return IngestResult(
+            kline_added=result.rows_saved,
+            quote_added=0,
+            kline_source=result.source,
+            quote_source=None,
+        )
 
     def ingest_quote(
         self,

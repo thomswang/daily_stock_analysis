@@ -9,7 +9,20 @@ from __future__ import annotations
 
 from typing import Tuple
 
-# ── 已废弃：全市场字段清单（解析 raw_json 时仍可含这些键，但不落列）──
+# ── westock kline 落库字段（前复权 qfq；与 quote 不复权 OHLC 口径不同）──
+DEFAULT_KLINE_ADJ = "qfq"
+
+WESTOCK_KLINE_PERSIST_FIELDS: Tuple[str, ...] = (
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "amount",
+    "turnover_rate",
+)
+
+# 已废弃别名（旧 stock_daily / fqkline 路径）
 WESTOCK_KLINE_FLOAT_FIELDS: Tuple[str, ...] = (
     "open", "high", "low", "last", "volume", "amount", "exchange",
 )

@@ -17,6 +17,12 @@ class KlineFetchResult:
 
 
 @dataclass(frozen=True)
+class KlinePersistResult:
+    rows_saved: int
+    source: str
+
+
+@dataclass(frozen=True)
 class QuoteFetchResult:
     rows_saved: int
     source: str

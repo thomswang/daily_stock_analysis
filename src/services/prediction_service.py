@@ -859,9 +859,9 @@ def preload_training_cache(
 
     from src.repositories.stock_repo import (
         DEFAULT_TRAIN_BULK_BATCH,
-        StockRepository,
         compute_training_date_range,
     )
+    from src.repositories.training_bars import load_training_bars_bulk, resolve_train_bar_source
 
     codes = [(s or "").strip().upper() for s in symbols if (s or "").strip()]
     if not codes:
@@ -869,22 +869,14 @@ def preload_training_cache(
 
     start, end = compute_training_date_range(lookback_days, end_date=end_date)
     bs = batch_size if batch_size is not None else DEFAULT_TRAIN_BULK_BATCH
+    src = resolve_train_bar_source()
     t0 = time.time()
-    raw = StockRepository().load_merged_bulk(codes, start, end, batch_size=bs)
-
-    keep_cols = ["date", "open", "high", "low", "close", "volume", "turnover_rate"]
-    cache: Dict[str, pd.DataFrame] = {}
-    for code, df in raw.items():
-        if df is None or df.empty:
-            continue
-        out = df[[c for c in keep_cols if c in df.columns]].copy()
-        out = out.sort_values("date").reset_index(drop=True)
-        cache[code] = out
+    cache = load_training_bars_bulk(codes, start, end, source=src, batch_size=bs)
 
     elapsed = time.time() - t0
     logger.info(
-        "[train-preload] 批量读库：请求 %d 只，命中 %d 只，区间 %s~%s，耗时 %.2fs",
-        len(codes), len(cache), start, end, elapsed,
+        "[train-preload] source=%s 批量读库：请求 %d 只，命中 %d 只，区间 %s~%s，耗时 %.2fs",
+        src.value, len(codes), len(cache), start, end, elapsed,
     )
     return cache
 

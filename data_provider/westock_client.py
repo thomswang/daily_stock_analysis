@@ -15,8 +15,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from .base import normalize_stock_code, is_bse_code
 from data_provider.westock_fields import (
+    DEFAULT_KLINE_ADJ,
     WESTOCK_A_SHARE_QUOTE_FLOAT_FIELDS,
     WESTOCK_A_SHARE_QUOTE_TEXT_FIELDS,
+    WESTOCK_KLINE_PERSIST_FIELDS,
     WESTOCK_QUOTE_PERSIST_FIELDS,
     WESTOCK_QUOTE_TEXT_FIELDS,
 )
@@ -225,6 +227,67 @@ def parse_quote_to_record(raw: Dict[str, Any]) -> Dict[str, Optional[float]]:
     """兼容旧调用：返回 parse_quote_snapshot 的数值子集。"""
     snap = parse_quote_snapshot(raw)
     return {k: snap.get(k) for k in WESTOCK_A_SHARE_QUOTE_FLOAT_FIELDS if k in snap}
+
+
+def fetch_kline_range(
+    stock_code: str,
+    *,
+    start_date: str,
+    end_date: str,
+    adj: str = DEFAULT_KLINE_ADJ,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> List[Dict[str, Any]]:
+    """一次 westock kline 拉取区间日 K（默认前复权 qfq）。"""
+    symbol = to_westock_symbol(stock_code)
+    if not symbol:
+        return []
+
+    args = [
+        "kline",
+        symbol,
+        "--period",
+        "day",
+        "--start",
+        start_date[:10],
+        "--end",
+        end_date[:10],
+        "--fq",
+        adj,
+    ]
+    payload = run_westock_raw(args, timeout=timeout)
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if isinstance(payload, dict):
+        if payload.get("success") is False:
+            err = payload.get("error") or {}
+            msg = err.get("message") if isinstance(err, dict) else str(err)
+            raise WestockCliError(msg or "kline 查询失败")
+        return [payload]
+    return []
+
+
+def parse_kline_row(
+    raw: Dict[str, Any],
+    *,
+    adj: str = DEFAULT_KLINE_ADJ,
+) -> Dict[str, Any]:
+    """westock kline JSON → stock_daily_kline 行（last→close, exchange→turnover_rate）。"""
+    record: Dict[str, Any] = {"adj_type": adj}
+    for key in WESTOCK_KLINE_PERSIST_FIELDS:
+        if key == "close":
+            val = _to_float(raw.get("last") if raw.get("last") is not None else raw.get("close"))
+        elif key == "turnover_rate":
+            val = _to_float(raw.get("exchange") if raw.get("exchange") is not None else raw.get("turnover_rate"))
+        else:
+            val = _to_float(raw.get(key))
+        record[key] = val
+
+    d_str = raw.get("date")
+    if d_str:
+        parsed = _parse_iso_date(str(d_str)[:10])
+        if parsed:
+            record["date"] = parsed
+    return record
 
 
 def parse_quote_snapshot(

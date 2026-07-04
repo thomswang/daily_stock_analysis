@@ -4,10 +4,12 @@
 from .service import DailyIngestService, IngestResult
 from .tencent_kline import TencentKlineIngestor
 from .tencent_quote import TencentQuoteIngestor
+from .westock_kline import WestockKlineIngestor
 
 __all__ = [
     "DailyIngestService",
     "IngestResult",
     "TencentKlineIngestor",
     "TencentQuoteIngestor",
+    "WestockKlineIngestor",
 ]
