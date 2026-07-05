@@ -13,6 +13,7 @@ from data_provider.westock_fields import DEFAULT_KLINE_ADJ
 
 from .runner import run_backfill_job
 from .segment_planner import is_no_data_error, plan_segments
+from .segment_planner import split_segments_by_max_days
 from .segment_planner import iso as _iso
 
 logger = logging.getLogger(__name__)
@@ -22,7 +23,7 @@ DEFAULT_PROGRESS_PATH = os.path.join("data", "kline_backfill_progress.json")
 
 
 class KlineBackfillService:
-    """kline 整段回填。"""
+    """kline 整段回填（TencentFetcher，HTTP 直连 fqkline API）。"""
 
     dataset = "kline"
 
@@ -35,9 +36,8 @@ class KlineBackfillService:
     @property
     def ingest(self):
         if self._ingest is None:
-            from src.ingest.westock_kline import WestockKlineIngestor
-
-            self._ingest = WestockKlineIngestor(db_manager=self.repo.db)
+            from src.ingest.tencent_kline import TencentKlineIngestor
+            self._ingest = TencentKlineIngestor(db_manager=self.repo.db)
         return self._ingest
 
     def run(
@@ -125,6 +125,8 @@ class KlineBackfillService:
             force=force,
             min_attempted=None if force else min_attempted,
         )
+        # 拆分大段：避免 westock CLI 单次 250 行截断
+        segments = split_segments_by_max_days(segments)
         if not segments:
             return {
                 "action": "skipped",
@@ -163,7 +165,7 @@ class KlineBackfillService:
             "first": cov2.get("first"),
             "last": cov2.get("last"),
             "rows": cov2.get("rows"),
-            "source": "WestockKline",
+            "source": "TencentFetcher",
             "start_reason": start_reason,
             "effective_start": _iso(effective_start),
         }

@@ -68,12 +68,12 @@ class DailyIngestService:
         start: date,
         end: date,
     ) -> IngestResult:
-        """westock kline 整段 → stock_daily_kline。"""
+        """腾讯 fqkline 整段 → stock_daily_kline。"""
         if not is_cn_a_share(code):
             return IngestResult(0, 0, "", None)
-        from src.ingest.westock_kline import WestockKlineIngestor
+        from src.ingest.tencent_kline import TencentKlineIngestor
 
-        ingestor = WestockKlineIngestor(db_manager=self.repo.db)
+        ingestor = TencentKlineIngestor(db_manager=self.repo.db)
         result = ingestor.backfill(code, start=start, end=end)
         logger.info(
             "%s kline 采集完成 [%s~%s]: +%d 行",

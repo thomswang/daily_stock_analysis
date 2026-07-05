@@ -206,7 +206,7 @@ class StockDailyKline(Base):
     amount = Column(Float)
     turnover_rate = Column(Float)
 
-    data_source = Column(String(50), default="WestockKline")
+    data_source = Column(String(50), default="TencentFetcher")
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
@@ -2960,7 +2960,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         records: List[Dict[str, Any]],
         code: str,
         *,
-        data_source: str = "WestockKline",
+        data_source: str = "TencentFetcher",
         adj_type: str = "qfq",
         overwrite: bool = True,
     ) -> int:

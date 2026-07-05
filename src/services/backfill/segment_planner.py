@@ -8,6 +8,10 @@ from typing import Any, List, Optional, Tuple
 
 _Seg = Tuple[date, date]
 
+# westock CLI 单次 kline 请求上限约 250 条（交易日）。
+# 拆成 6 个月子段 ≈ 125 交易日，留足余量。
+_MAX_SEGMENT_DAYS = 180
+
 _TRANSIENT_ERROR_MARKERS = (
     "CircuitOpen", "熔断", "Connection", "RemoteDisconnected", "Timeout",
     "timed out", "ProtocolError", "Max retries", "SSL", "ReadTimeout",
@@ -88,3 +92,26 @@ def plan_segments(
     if (end_d - last).days <= fresh_days and start_d >= first:
         return []
     return [(start_d, end_d)] if start_d <= end_d else []
+
+
+def split_segments_by_max_days(
+    segments: List[_Seg],
+    max_days: int = _MAX_SEGMENT_DAYS,
+) -> List[_Seg]:
+    """将超过 max_days 的段拆成连续子段，避免 westock CLI 250 行截断。
+
+    拆分策略：按日历天数等分，每段不超过 max_days 天。
+    6 个月 ≈ 180 天 ≈ 125 交易日 < 250 行上限。
+    """
+    out: List[_Seg] = []
+    for start, end in segments:
+        span = (end - start).days
+        if span <= max_days:
+            out.append((start, end))
+            continue
+        cursor = start
+        while cursor <= end:
+            seg_end = min(cursor + timedelta(days=max_days - 1), end)
+            out.append((cursor, seg_end))
+            cursor = seg_end + timedelta(days=1)
+    return out

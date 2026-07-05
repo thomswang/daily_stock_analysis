@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 45.0
 _DEFAULT_QUOTE_BATCH = 3
 
+# 进程内 CLI 调用最小间隔（秒），降低多进程并发时被限流的风险。
+# 可通过环境变量 WESTOCK_CLI_MIN_INTERVAL 覆盖。
+_MIN_CLI_INTERVAL = float(os.getenv("WESTOCK_CLI_MIN_INTERVAL", "0.3"))
+_LAST_CLI_CALL_TIME: float = 0.0
+
 
 class WestockCliError(Exception):
     """westock-data CLI 调用失败。"""
@@ -69,6 +74,16 @@ def to_westock_symbol(stock_code: str) -> Optional[str]:
 
 def run_westock_raw(args: List[str], *, timeout: float = _DEFAULT_TIMEOUT) -> Any:
     """执行 ``node index.js <args> --raw`` 并解析 JSON。"""
+    global _LAST_CLI_CALL_TIME
+
+    # 进程内节流：确保两次 CLI 调用之间至少间隔 _MIN_CLI_INTERVAL 秒，
+    # 降低多进程并发时被 westock 上游限流的风险。
+    if _MIN_CLI_INTERVAL > 0:
+        elapsed = time.monotonic() - _LAST_CLI_CALL_TIME
+        if elapsed < _MIN_CLI_INTERVAL:
+            time.sleep(_MIN_CLI_INTERVAL - elapsed)
+    _LAST_CLI_CALL_TIME = time.monotonic()
+
     index_js = resolve_westock_index_js()
     if not index_js:
         raise WestockCliError(

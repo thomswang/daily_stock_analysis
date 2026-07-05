@@ -67,7 +67,7 @@ class DailyKlineService:
         start: date,
         end: date,
         overwrite: bool = True,
-        data_source: str = "WestockKline",
+        data_source: str = "TencentFetcher",
         adj: Optional[str] = None,
     ) -> int:
         """拉取 kline 整段并 upsert 到 stock_daily_kline。"""
