@@ -20,6 +20,10 @@ class KlineFetchResult:
 class KlinePersistResult:
     rows_saved: int
     source: str
+    # 上游 fetch 拿到的原始行数（未去重/未落库前）。None 表示 ingestor 未记录。
+    # 用于区分「接口真的返回 0 条（该票该区间确无数据）」vs「拉到了但落库 0 行
+    # （例如 upsert 全冲突，或者被瞬时限流后重试）」——上层据此决定是否终态。
+    rows_fetched: Optional[int] = None
 
 
 @dataclass(frozen=True)

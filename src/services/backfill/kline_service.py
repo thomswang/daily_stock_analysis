@@ -176,12 +176,26 @@ class KlineBackfillService:
         *,
         retry: int,
     ):
+        """返回 (result, err)。err 为 None 表示成功；err 命中 no_data 才判 empty。
+
+        关键：**只有** ``rows_fetched == 0`` 才代表 westock 接口确实返回空
+        （该票该区间确无数据）；``rows_fetched > 0 but rows_saved == 0`` 说明
+        拉到了但落库 0 行（如瞬时限流后重试、全部 upsert 冲突），此时不可判 empty，
+        必须回落成可重试错误——历史上把这两种情况混起来标终态导致大量票误判。
+        """
         last_err = None
         for attempt in range(retry + 1):
             try:
                 result = self.ingest.backfill(code, start=seg_start, end=seg_end)
-                if result.rows_saved == 0:
+                # 接口真的返回空 → 上层通过 no_data_error 判 empty 终态
+                if result.rows_fetched == 0:
                     last_err = "kline 返回空"
+                # 拉到但没保存：可能被限流/去重/事务冲突，判为可重试瞬时错误
+                elif result.rows_saved == 0:
+                    last_err = (
+                        f"kline 拉到 {result.rows_fetched} 条但落库 0 行"
+                        f"（疑似瞬时问题）"
+                    )
                 else:
                     return result, None
             except Exception as exc:  # noqa: BLE001

@@ -15,7 +15,13 @@ _TRANSIENT_ERROR_MARKERS = (
 )
 _NO_DATA_MARKERS = (
     "未查询到", "未获取到", "无数据", "没有数据", "暂无数据", "查询不到",
-    "no data", "not found", "返回空", "空日线",
+    "no data", "not found", "空日线",
+    # 注意：不再包含裸「返回空」/「kline 返回空」/「quote 返回空」——
+    # 因为并发风控 / CLI 瞬时崩坏也会让接口返回 []，此前把它当 empty 终态
+    # 导致大量票被误判永久跳过（如 000531 明明 2023+ 有数据，凌晨批跑时接口回空
+    # 就被标 empty，之后再跑也不重试）。现在这类情况一律走可重试 failed。
+    # 真正的「未上市/已退市」应由 resolve_effective_start（cn_list_dates.json）
+    # 前置拦截，effective_start is None 才判 empty，语义更清晰、误伤率更低。
 )
 
 

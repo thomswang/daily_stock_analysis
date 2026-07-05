@@ -34,11 +34,20 @@ class WestockKlineIngestor:
         end: date,
         overwrite: bool = True,
     ) -> KlinePersistResult:
-        saved = self._service.backfill_and_save(
+        # 拆分 fetch/save 两步：让上层能通过 rows_fetched 区分「接口真返回 0 条」
+        # 和「拉到了但落库 0 行」（后者不应被判为该票的 empty 终态）。
+        records = self._service.fetch_bars(code, start=start, end=end)
+        if not records:
+            return KlinePersistResult(
+                rows_saved=0, source=self.source_name, rows_fetched=0
+            )
+        saved = self._service.db.save_daily_kline_data(
+            records,
             code,
-            start=start,
-            end=end,
-            overwrite=overwrite,
             data_source=self.source_name,
+            adj_type=self._service.adj,
+            overwrite=overwrite,
         )
-        return KlinePersistResult(rows_saved=saved, source=self.source_name)
+        return KlinePersistResult(
+            rows_saved=saved, source=self.source_name, rows_fetched=len(records)
+        )
