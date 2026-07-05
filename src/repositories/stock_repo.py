@@ -341,7 +341,11 @@ class StockRepository:
         batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
         adj_type: str = "qfq",
     ) -> Dict[str, pd.DataFrame]:
-        """批量读 stock_daily_kline（前复权 OHLCV，供技术因子训练）。"""
+        """批量读 stock_daily_kline（前复权 OHLCV，供技术因子训练）。
+
+        注意：amount/turnover_rate 列恒为 NULL（fqkline 不含），读取后为 NaN。
+        build_features 对 turnover 缺失填 0（可选特征），不影响训练。
+        """
         norm_codes = _normalize_codes(codes)
         if not norm_codes:
             return {}

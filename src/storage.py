@@ -187,9 +187,15 @@ for _fname in _WESTOCK_QUOTE_FIELDS:
 
 class StockDailyKline(Base):
     """
-    A 股 westock kline 日线表（前复权 qfq 等；与 stock_daily_quote 不复权截面分离）。
+    A 股 kline 日线表（前复权 qfq 等；与 stock_daily_quote 不复权截面分离）。
 
-    单表 code+date+adj_type；8 个 OHLCV 业务列。
+    数据源：TencentFetcher（腾讯 fqkline API），单表 code+date+adj_type。
+
+    字段说明：
+      - open/high/low/close/volume：fqkline 直供，有值
+      - amount：成交额，fqkline 不返回，恒为 NULL（成交额在 stock_daily_quote 表）
+      - turnover_rate：换手率，fqkline 不返回，恒为 NULL（换手率在 stock_daily_quote 表）
+      - data_source：记录数据来源（TencentFetcher）
     """
     __tablename__ = "stock_daily_kline"
 
@@ -203,8 +209,8 @@ class StockDailyKline(Base):
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)
-    amount = Column(Float)
-    turnover_rate = Column(Float)
+    amount = Column(Float)           # NULL：fqkline 不含成交额，见 stock_daily_quote
+    turnover_rate = Column(Float)    # NULL：fqkline 不含换手率，见 stock_daily_quote
 
     data_source = Column(String(50), default="TencentFetcher")
     created_at = Column(DateTime, default=datetime.now)
@@ -2964,7 +2970,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         adj_type: str = "qfq",
         overwrite: bool = True,
     ) -> int:
-        """保存 westock kline 到 stock_daily_kline（code+date+adj_type upsert）。"""
+        """保存 kline 到 stock_daily_kline（code+date+adj_type upsert）。
+
+        数据源为 TencentFetcher（腾讯 fqkline）。amount/turnover_rate 恒为 NULL，
+        由 stock_daily_quote 表补。
+        """
         if not records:
             return 0
 
