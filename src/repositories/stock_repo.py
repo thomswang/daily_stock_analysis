@@ -11,15 +11,41 @@
 
 import logging
 import os
-from datetime import date
-from typing import Optional, List, Dict, Any
+from datetime import date, timedelta
+from typing import Optional, List, Dict, Any, Iterable, Tuple
 
 import pandas as pd
 from sqlalchemy import and_, desc, func, select
 
-from src.storage import DatabaseManager, StockDaily, StockDailyQuote
+from src.storage import DatabaseManager, StockDaily, StockDailyKline, StockDailyQuote
 
 logger = logging.getLogger(__name__)
+
+
+# 训练批量预读：每批 IN 子句包含的股票数（SQLite 绑定参数上限 ~999）
+DEFAULT_TRAIN_BULK_BATCH = int(os.getenv("TRAIN_BULK_BATCH", "500"))
+
+# 与 prediction_service._load_cached_df 一致：多取日历日以保证 rolling 后样本够
+def compute_training_date_range(
+    lookback_days: int,
+    *,
+    end_date: Optional[date] = None,
+) -> Tuple[date, date]:
+    end_d = end_date or date.today()
+    start_d = end_d - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
+    return start_d, end_d
+
+
+def _normalize_codes(codes: Iterable[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for raw in codes:
+        code = (raw or "").strip().upper()
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        out.append(code)
+    return out
 
 
 def _legacy_turnover_fallback() -> bool:
@@ -260,3 +286,179 @@ class StockRepository:
                 .limit(eval_window_days)
             ).scalars().all()
             return list(rows)
+
+    def load_merged_bulk(
+        self,
+        codes: List[str],
+        start_date: date,
+        end_date: date,
+        *,
+        batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
+    ) -> Dict[str, pd.DataFrame]:
+        """批量读 stock_daily_quote（单表；训练预加载暂用，后续可改专用 API）。
+
+        OHLC 来自 quote；close = coalesce(last, price)。
+        """
+        norm_codes = _normalize_codes(codes)
+        if not norm_codes:
+            return {}
+
+        batch_size = max(1, int(batch_size))
+        result: Dict[str, pd.DataFrame] = {}
+        try:
+            with self.db.get_session() as session:
+                conn = session.connection()
+                for i in range(0, len(norm_codes), batch_size):
+                    batch = norm_codes[i : i + batch_size]
+                    stmt = (
+                        select(StockDailyQuote)
+                        .where(
+                            StockDailyQuote.code.in_(batch),
+                            StockDailyQuote.date >= start_date,
+                            StockDailyQuote.date <= end_date,
+                        )
+                        .order_by(StockDailyQuote.code, StockDailyQuote.date)
+                    )
+                    rows = session.execute(stmt).scalars().all()
+                    if not rows:
+                        continue
+                    records: List[Dict[str, Any]] = []
+                    for row in rows:
+                        rec: Dict[str, Any] = {
+                            "code": row.code,
+                            "date": row.date,
+                            "open": row.open,
+                            "high": row.high,
+                            "low": row.low,
+                            "volume": row.volume,
+                            "amount": row.amount,
+                            "turnover_rate": getattr(row, "turnover_rate", None),
+                            "float_shares": getattr(row, "float_shares", None),
+                            "volume_ratio": getattr(row, "volume_ratio", None),
+                            "change": getattr(row, "change", None),
+                            "change_percent": getattr(row, "change_percent", None),
+                        }
+                        last = getattr(row, "price", None)
+                        rec["last"] = last
+                        rec["close"] = last
+                        records.append(rec)
+                    chunk = pd.DataFrame(records)
+                    chunk["code"] = chunk["code"].astype(str).str.upper()
+                    for code, group in chunk.groupby("code", sort=False):
+                        g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
+                        result[str(code).upper()] = g
+        except Exception as exc:
+            logger.error("批量读 quote 失败: %s", exc)
+            raise
+        return result
+
+    def load_merged_df(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+    ) -> pd.DataFrame:
+        """单票读 stock_daily_quote（训练暂用，后续可改）。"""
+        bulk = self.load_merged_bulk(
+            [code], start_date, end_date, batch_size=1,
+        )
+        return bulk.get((code or "").strip().upper(), pd.DataFrame())
+
+    def get_kline_coverage(
+        self,
+        code: str,
+        *,
+        adj_type: str = "qfq",
+    ) -> Dict[str, Any]:
+        """查询 stock_daily_kline 已存最早/最晚日期与条数。"""
+        try:
+            with self.db.get_session() as session:
+                first, last, cnt = session.execute(
+                    select(
+                        func.min(StockDailyKline.date),
+                        func.max(StockDailyKline.date),
+                        func.count(),
+                    ).where(
+                        and_(
+                            StockDailyKline.code == code,
+                            StockDailyKline.adj_type == adj_type,
+                        )
+                    )
+                ).one()
+            return {"first": first, "last": last, "rows": int(cnt or 0)}
+        except Exception as e:
+            logger.error("查询 %s kline 覆盖失败: %s", code, e)
+            return {"first": None, "last": None, "rows": 0}
+
+    def load_kline_bulk(
+        self,
+        codes: List[str],
+        start_date: date,
+        end_date: date,
+        *,
+        batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
+        adj_type: str = "qfq",
+    ) -> Dict[str, pd.DataFrame]:
+        """批量读 stock_daily_kline（前复权 OHLCV，供技术因子训练）。
+
+        注意：amount/turnover_rate 列恒为 NULL（fqkline 不含），读取后为 NaN。
+        build_features 对 turnover 缺失填 0（可选特征），不影响训练。
+        """
+        norm_codes = _normalize_codes(codes)
+        if not norm_codes:
+            return {}
+
+        batch_size = max(1, int(batch_size))
+        result: Dict[str, pd.DataFrame] = {}
+        try:
+            with self.db.get_session() as session:
+                for i in range(0, len(norm_codes), batch_size):
+                    batch = norm_codes[i : i + batch_size]
+                    stmt = (
+                        select(StockDailyKline)
+                        .where(
+                            StockDailyKline.code.in_(batch),
+                            StockDailyKline.adj_type == adj_type,
+                            StockDailyKline.date >= start_date,
+                            StockDailyKline.date <= end_date,
+                        )
+                        .order_by(StockDailyKline.code, StockDailyKline.date)
+                    )
+                    rows = session.execute(stmt).scalars().all()
+                    if not rows:
+                        continue
+                    records: List[Dict[str, Any]] = []
+                    for row in rows:
+                        records.append({
+                            "code": row.code,
+                            "date": row.date,
+                            "open": row.open,
+                            "high": row.high,
+                            "low": row.low,
+                            "close": row.close,
+                            "volume": row.volume,
+                            "amount": row.amount,
+                            "turnover_rate": row.turnover_rate,
+                        })
+                    chunk = pd.DataFrame(records)
+                    chunk["code"] = chunk["code"].astype(str).str.upper()
+                    for code, group in chunk.groupby("code", sort=False):
+                        g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
+                        result[str(code).upper()] = g
+        except Exception as exc:
+            logger.error("批量读 kline 失败: %s", exc)
+            raise
+        return result
+
+    def load_kline_df(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+        *,
+        adj_type: str = "qfq",
+    ) -> pd.DataFrame:
+        bulk = self.load_kline_bulk(
+            [code], start_date, end_date, batch_size=1, adj_type=adj_type,
+        )
+        return bulk.get((code or "").strip().upper(), pd.DataFrame())

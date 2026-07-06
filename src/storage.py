@@ -177,6 +177,49 @@ class StockDaily(Base):
         }
 
 
+class StockDailyKline(Base):
+    """
+    A 股 kline 日线表（前复权 qfq 等；与 stock_daily_quote 不复权截面分离）。
+
+    数据源：TencentFetcher（腾讯 fqkline API），单表 code+date+adj_type。
+
+    字段说明：
+      - open/high/low/close/volume：fqkline 直供，有值
+      - amount：成交额，fqkline 不返回，恒为 NULL（成交额在 stock_daily_quote 表）
+      - turnover_rate：换手率，fqkline 不返回，恒为 NULL（换手率在 stock_daily_quote 表）
+      - data_source：记录数据来源（TencentFetcher）
+    """
+    __tablename__ = "stock_daily_kline"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(16), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    adj_type = Column(String(8), nullable=False, default="qfq", index=True)
+
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)
+    amount = Column(Float)           # NULL：fqkline 不含成交额，见 stock_daily_quote
+    turnover_rate = Column(Float)    # NULL：fqkline 不含换手率，见 stock_daily_quote
+
+    data_source = Column(String(50), default="TencentFetcher")
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("code", "date", "adj_type", name="uix_kline_code_date_adj"),
+        Index("ix_kline_code_date_adj", "code", "date", "adj_type"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<StockDailyKline(code={self.code}, date={self.date}, "
+            f"adj={self.adj_type}, close={self.close})>"
+        )
+
+
 class StockDailyQuote(Base):
     """
     股票日线行情截面层（quote --date）
@@ -2975,6 +3018,125 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             logger.error("保存 %s quote 截面失败: %s", code, exc)
             raise
     
+    def save_daily_kline_data(
+        self,
+        records: List[Dict[str, Any]],
+        code: str,
+        *,
+        data_source: str = "TencentFetcher",
+        adj_type: str = "qfq",
+        overwrite: bool = True,
+    ) -> int:
+        """保存 kline 到 stock_daily_kline（code+date+adj_type upsert）。
+
+        数据源为 TencentFetcher（腾讯 fqkline）。amount/turnover_rate 恒为 NULL，
+        由 stock_daily_quote 表补。
+        """
+        if not records:
+            return 0
+
+        from data_provider.westock_fields import WESTOCK_KLINE_PERSIST_FIELDS
+
+        now = datetime.now()
+        kline_fields = WESTOCK_KLINE_PERSIST_FIELDS
+        by_date: Dict[date, Dict[str, Any]] = {}
+        for item in records:
+            row_date = self._normalize_daily_date(item.get("date"))
+            payload: Dict[str, Any] = {
+                "code": code,
+                "date": row_date,
+                "adj_type": item.get("adj_type") or adj_type,
+                "data_source": data_source,
+                "created_at": now,
+                "updated_at": now,
+            }
+            for field in kline_fields:
+                payload[field] = self._normalize_sql_value(item.get(field))
+            by_date[row_date] = payload
+
+        rows = list(by_date.values())
+        batch_dates = list(by_date.keys())
+
+        def _write(session: Session) -> int:
+            if self._is_sqlite_engine:
+                _CHUNK = 20
+                existing_dates = set()
+                for j in range(0, len(batch_dates), 500):
+                    chunk_dates = batch_dates[j : j + 500]
+                    if not chunk_dates:
+                        continue
+                    existing_dates.update(
+                        session.execute(
+                            select(StockDailyKline.date).where(
+                                and_(
+                                    StockDailyKline.code == code,
+                                    StockDailyKline.adj_type == adj_type,
+                                    StockDailyKline.date.in_(chunk_dates),
+                                )
+                            )
+                        ).scalars().all()
+                    )
+                new_count = sum(1 for d in batch_dates if d not in existing_dates)
+                for i in range(0, len(rows), _CHUNK):
+                    chunk = rows[i : i + _CHUNK]
+                    stmt = sqlite_insert(StockDailyKline).values(chunk)
+                    excluded = stmt.excluded
+                    update_map = {f: getattr(excluded, f) for f in kline_fields}
+                    update_map["data_source"] = excluded.data_source
+                    update_map["updated_at"] = excluded.updated_at
+                    if not overwrite:
+                        for f in kline_fields:
+                            update_map[f] = func.coalesce(
+                                getattr(excluded, f), getattr(StockDailyKline, f)
+                            )
+                    session.execute(
+                        stmt.on_conflict_do_update(
+                            index_elements=["code", "date", "adj_type"],
+                            set_=update_map,
+                        )
+                    )
+                return new_count if not overwrite else len(rows)
+
+            existing_rows = {
+                row.date: row
+                for row in session.execute(
+                    select(StockDailyKline).where(
+                        and_(
+                            StockDailyKline.code == code,
+                            StockDailyKline.adj_type == adj_type,
+                            StockDailyKline.date.in_(batch_dates),
+                        )
+                    )
+                ).scalars().all()
+            }
+            new_count = 0
+            for record in rows:
+                existing = existing_rows.get(record["date"])
+                if existing is None:
+                    session.add(StockDailyKline(**record))
+                    new_count += 1
+                    continue
+                for field in kline_fields:
+                    val = record.get(field)
+                    if val is None and not overwrite:
+                        continue
+                    if val is not None or overwrite:
+                        setattr(existing, field, val)
+                existing.data_source = record["data_source"]
+                existing.updated_at = record["updated_at"]
+            return new_count
+
+        try:
+            saved = self._run_write_transaction(
+                f"save_daily_kline_data[{code}]",
+                _write,
+            )
+            logger.info("保存 %s kline(%s) %d 条", code, adj_type, saved)
+            return saved
+        except Exception as exc:
+            logger.error("保存 %s kline 失败: %s", code, exc)
+            raise
+
     def get_analysis_context(
         self, 
         code: str,
