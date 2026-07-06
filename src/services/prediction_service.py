@@ -137,7 +137,19 @@ def make_weekly_open_close_return(
     open_: pd.Series,
     close: pd.Series,
 ) -> pd.Series:
-    """真实周度交易收益：信号日后下一交易日开盘买，入场周最后交易日收盘卖。"""
+    """真实周度交易收益：信号日后下一交易日开盘买，入场周最后交易日收盘卖。
+
+    ── 本次改动核心：训练标签与实盘买卖价格对齐 ──
+    旧标签 make_forward_return 用 close[t+h]/close[t]−1（收盘到收盘），
+    但实盘是「周一开盘买入、周五收盘卖出」，两者存在系统性偏差：
+      - close-to-close 包含信号日收盘→次日开盘的跳空（不可执行）
+      - open-to-close 才是真实持有期收益
+    本函数统一用于 cross_section / weekly_open_close 标签口径，
+    确保训练目标 = 回测执行口径 = 推荐服务实际可实现的收益。
+
+    返回与输入等长的 Series：每个信号日 i 的收益 = exit_close / entry_open − 1；
+    最后一行无后续交易日，返回 NaN。
+    """
     d = pd.to_datetime(pd.Series(list(dates)), errors="coerce").reset_index(drop=True)
     op = pd.to_numeric(pd.Series(list(open_)), errors="coerce").reset_index(drop=True)
     cl = pd.to_numeric(pd.Series(list(close)), errors="coerce").reset_index(drop=True)
@@ -379,6 +391,8 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
         else pd.Series(np.nan, index=data.index)
     )
 
+    # fill_method=None：pandas 2.x 默认前向填充缺失值，会在停牌日"借用"前一日的收益，
+    # 导致特征产生虚假信号。显式禁用前填，保证停牌日 ret 为 NaN（后续 dropna 剔除）。
     ret = close.pct_change(fill_method=None)
     prev_close = close.shift(1)
 
@@ -883,6 +897,11 @@ def preload_training_cache(
     symbols: List[str], lookback_days: int,
 ) -> Dict[str, pd.DataFrame]:
     """批量预加载多只股票的本地缓存日线，供离线训练（refresh=False）一次读取。
+
+    ── 本次新增：解决 model_training_service 导入但未定义的函数 ──
+    全市场训练（--all）涉及数千只票，逐票 _load_cached_df 会产生数千次 SQLite
+    往返（每次 open→query→close），成为训练瓶颈。本函数优先尝试 repo 的 bulk
+    方法一次性读取全量数据再按 code 分组；repo 未实现 bulk 时自动退回逐票读取。
 
     比逐票 _load_cached_df 快得多：只打开一次 SQLite 连接做全量扫描，再按 code 分组。
     失败的票跳过（返回字典中不含该 key），调用方按缺失处理。

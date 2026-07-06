@@ -58,7 +58,13 @@ def log(*a):
 
 
 def collect_pool(n_stocks, horizon, keep_st, seed=7, lookback=3200):
-    """构造样本池：X(信号日特征) + fwd(下周开盘到周末收盘收益) + OHLCV + date/code。"""
+    """构造样本池：X(信号日特征) + fwd(下周开盘到周末收盘收益) + OHLCV + date/code。
+
+    ── 本次改动：样本池增加 high/low/volume ──
+    原样本池只有 open/close，无法判断停牌和涨跌停。新增 high/low/volume 后，
+    _can_buy/_can_sell 可据此过滤不可成交的票（停牌=零成交，一字涨停=open=high），
+    使回测收益更贴近实盘。
+    """
     codes = CodeListLoader.load_all_cn_codes()
     name_map = CodeListLoader.load_cn_name_map()
     rng = np.random.default_rng(seed)
@@ -207,8 +213,22 @@ def _pick(order_codes, prev_names, top_n, keep_rank, cap, ind_map):
 
 
 # ---- 停牌/涨跌停建模 ----
+# ── 本次新增：让回测收益更贴近实盘 ──
+# 旧版 _ret 假设所有票都能以开盘价买入、收盘价卖出，但实盘中：
+#   1. 停牌日（volume=0）无法成交
+#   2. 一字涨停（open=high 且涨幅≥9.5%）开盘即封板，无法买入
+#   3. 一字跌停（close=low 且跌幅≥9.5%）收盘封板，无法卖出
+# 这三种情况在 A 股每周都有，不建模会系统性高估收益（尤其小盘股）。
+# 处理方式：不可成交的票跳过，权重按可成交票归一化（而非收益记0）。
+
+
 def _can_buy(open_lut, high_lut, vol_lut, close_lut, code, entry):
-    """检查 entry 日能否以开盘价买入（停牌/一字涨停无法买入）。"""
+    """检查 entry 日能否以开盘价买入。
+
+    不可买入的情况：
+    1. 停牌：当日 volume=0（零成交）
+    2. 一字涨停：open=high 且相对前日收盘涨幅≥9.5%（开盘即封涨停板，无法买入）
+    """
     vol_s = vol_lut.get(code)
     if vol_s is None:
         return False
@@ -238,7 +258,12 @@ def _can_buy(open_lut, high_lut, vol_lut, close_lut, code, entry):
 
 
 def _can_sell(close_lut, low_lut, vol_lut, code, exit_):
-    """检查 exit 日能否以收盘价卖出（停牌/一字跌停无法卖出）。"""
+    """检查 exit 日能否以收盘价卖出。
+
+    不可卖出的情况：
+    1. 停牌：当日 volume=0（零成交）
+    2. 一字跌停：close=low 且相对前日收盘跌幅≥9.5%（收盘封跌停板，无法卖出）
+    """
     vol_s = vol_lut.get(code)
     if vol_s is None:
         return False
@@ -347,6 +372,15 @@ def run(args):
     log(f"回测区间 {start.date()}~{end.date()}：{len(weeks)} 个交易周\n")
 
     # ── 阶段1（贵）：逐周打分，缓存每周的排名与概率（只算一次）──
+    #
+    # Walk-forward 滚动训练（本次改动对齐）：
+    #   - 默认 --start 2023-01-01 + --train-days 2520（≈7年）
+    #     → 初始训练窗口 2015-2022，2023-2026 为样本外 walk-forward
+    #   - 每 --retrain-months 个月重训一次（默认1=月度）
+    #   - embargo 用 label_exit < sig_ts 逐样本严格过滤（非自然日估算）
+    #     确保训练样本的标签收益区间完全在信号日之前结束，无未来函数泄露
+    #   - 标签用 attach_weekly_trade_labels 的 fwd（open→close 真实交易收益）
+    #     与 model_training_service 的 cross_section 口径完全一致
     week_recs = []
     model, cur_key = None, None
     for entry, exit_ in weeks:
@@ -448,7 +482,15 @@ def _ann(res, per_year):
 
 
 def _report_by_year(results, args):
-    """分年归因：对每个口径按自然年切分，输出各年收益/夏普/胜率/超额。"""
+    """分年归因：对每个口径按自然年切分，输出各年收益/夏普/胜率/超额。
+
+    ── 本次新增：验证策略在不同市场状态下的稳健性 ──
+    全周期年化收益率可能掩盖单年波动：某策略可能只在牛市跑赢，熊市反而亏更多。
+    分年输出可以直观看到：
+      - 2018 熊市 / 2020 疫情 / 2022 熊 / 2024-25 修复 各自表现
+      - 超额收益是否在所有年份都为正（非运气）
+      - 换手和成本在不同市场状态下的影响
+    """
     log("\n============ 分年归因 ============")
     for name, res in results.items():
         hold = build_configs(args)[name]["hold"]
@@ -528,6 +570,10 @@ def parse_args():
     p = argparse.ArgumentParser(description="周度 Top-N 选股回测")
     p.add_argument("--stocks", type=int, default=1500, help="抽样股票数；<=0 表示全市场")
     p.add_argument("--top-n", type=int, default=20)
+
+    # ── 本次改动：默认区间从 2024 改为 2023，配合 2015-2022 初始训练做 walk-forward ──
+    # 旧默认 --start 2024 + --train-days 1260 只覆盖 ~2 年，结论不够稳健。
+    # 新默认 --start 2023 + --train-days 2520（≈7年）→ 初始训练 2015-2022，样本外 2023-2026。
     p.add_argument("--start", type=str, default="2023-01-01",
                    help="回测起始日(默认2023-01-01，配合2023-2026 walk-forward)")
     p.add_argument("--end", type=str, default="2026-07-01")
@@ -536,12 +582,16 @@ def parse_args():
     p.add_argument("--horizon", type=int, default=5, help="训练标签前瞻天数(≈周)")
     p.add_argument("--lookback", type=int, default=3800,
                    help="每票回溯自然日(默认3800≈覆盖2015以来)")
+
+    # ── 本次改动：成本从 10bp 改为 15bp（A股含印花税+佣金+滑点的合理估计）──
     p.add_argument("--retrain-months", type=int, default=1,
                    help="每几个月重训一次(默认1=月度；长周期建议3=季度以缩短耗时)")
     p.add_argument("--cost-bps", type=float, default=15.0, help="单边成本(基点，默认15=A股含印花税)")
     p.add_argument("--keep-st", action="store_true", help="保留 ST 股(默认剔除)")
     p.add_argument("--keep-rank", type=int, default=40, help="排名缓冲阈值：跌出该名次才换出")
     p.add_argument("--probw-k", type=int, default=50, help="概率加权取前 K 只")
+
+    # ── 本次新增：top_pct 和 by-year ──
     p.add_argument("--top-pct", type=float, default=0.5,
                    help="横截面正样本阈值(默认0.5=前50%%；0.2=前20%%)")
     p.add_argument("--by-year", action="store_true", help="输出分年归因(验证牛/熊/震荡各状态稳健性)")

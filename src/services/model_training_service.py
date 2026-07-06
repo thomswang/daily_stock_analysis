@@ -6,8 +6,8 @@
 
 职责：把"训练"从预测请求链路里剥离出来，作为**可由用户掌控的离线任务**：
     命令行手动触发 / 定时触发 → 拉取(或复用缓存)多只股票日线
-    → 构造技术因子 + 打标签(未来 N 日方向, 默认 5 日) → 汇聚成一个大样本集
-    → 训练一个**全局**逻辑回归模型 → 持久化 + 版本化(prediction_models 表)
+    → 构造技术因子 + 打标签 → 汇聚成一个大样本集
+    → 训练一个**全局**模型 → 持久化 + 版本化(prediction_models 表)
     → 标记为激活版本，供预测服务直接加载推理
 
 设计取舍（参考 invest_dojo，但适配本项目 SQLite 单机规模）：
@@ -15,8 +15,18 @@
    "训练一个走势预测模型"，样本更多、更稳健，也便于统一版本管理。
 2. **复用现有基建**：特征工程直接复用 prediction_service.build_features；
    数据读取复用 _load_daily_df 的读透缓存（与主分析/回测共享 stock_daily）。
-3. **模型参数入库**：模型极小（权重+偏置+标准化统计量），直接以 JSON 存 DB，
-   省去 invest_dojo 的 MinIO/对象存储依赖。
+3. **模型参数入库**：模型极小（权重+偏置+标准化统计量 或 LightGBM 文本），
+   直接以 JSON 存 DB，省去 invest_dojo 的 MinIO/对象存储依赖。
+
+── 本次改动（训练目标对齐）──
+4. **默认 cross_section + lightgbm**：模型目标从"未来是否上涨"改为"同一周谁更强"，
+   与推荐 TopN 更匹配。横截面排序天然市场中性、类别均衡，基线恒 ~50%。
+5. **标签 = 真实交易收益**：cross_section 标签从 close-to-close 改为
+   exit_close/entry_open−1（周一开盘买、周五收盘卖），与回测执行口径完全对齐。
+6. **训练前剔除 ST**：与回测/推荐口径一致，避免 ST 股（退市风险、流动性极差）
+   污染训练样本。
+7. **top_pct 参数**：横截面正样本阈值可调（默认前50%，可设前20%更强选股要求）。
+8. **lookback 默认 1500**：从 500（≈2年）提到 1500（≈6年），充分利用 2015-2026 长历史。
 
 ⚠️ 训练产物仅供技术研究，不构成任何投资建议。
 """
@@ -180,8 +190,11 @@ class ModelTrainingService:
             d_i = usable["date"].tolist()
 
             if is_xsec:
-                # 周度真实交易收益：信号日后下一交易日开盘买、入场周最后交易日收盘卖
-                # （exit_close/entry_open−1），与回测执行口径完全对齐
+                # ── 周度真实交易收益标签（与回测执行口径完全对齐）──
+                # 信号日 i 的标签 = 下一交易日开盘买入 → 入场周最后交易日收盘卖出的收益率
+                # （exit_close / entry_open − 1），而非旧的 close-to-close 收益。
+                # 这样训练目标 = 回测执行口径 = 推荐服务实际可实现的收益，消除"研究 vs 实盘"的裂缝。
+                # 横截面排名在同一信号日内进行：前 top_pct 记为正样本(1)，其余为负样本(0)。
                 open_aligned = pd.DataFrame({"date": pd.to_datetime(df["date"]), "open": df["open"]}).merge(
                     pd.DataFrame({"date": pd.to_datetime(feats["date"])}),
                     on="date",
@@ -245,6 +258,9 @@ class ModelTrainingService:
 
         if is_xsec:
             # ── 横截面排名：按周度真实交易收益在「同日(同行业)」内排名，前 top_pct 记 1 ──
+            # top_pct=0.5 → 前50%为正样本（基线~50%，超过即纯选股能力）
+            # top_pct=0.2 → 前20%为正样本（更强的选股要求，正样本更少但信号更强）
+            # 行业中性模式下在同日同行业内排名，剔除行业 beta 的影响
             fwd = np.concatenate(fwd_parts)
             dser = pd.to_datetime(pd.Series(all_dates), errors="coerce")
             frame = pd.DataFrame({"d": dser.values, "ind": ind_parts, "fwd": fwd})

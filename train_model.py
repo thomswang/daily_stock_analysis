@@ -195,6 +195,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=0.3, help="学习率（默认 0.3）")
     parser.add_argument("--horizon", type=int, default=5, help="标签前瞻天数=预测未来N日方向（默认 5）")
     parser.add_argument("--threshold", type=float, default=0.0, help="记为看涨所需最小未来收益（默认 0=纯方向，如 0.02=需涨超2%%）")
+    # ── 本次改动：默认从 absolute+logistic 改为 cross_section+lightgbm ──
+    # 原因：模型目标从"未来是否上涨"改为"同一周谁更强"，与推荐 TopN 更匹配。
+    # 横截面排序天然市场中性、类别均衡，且标签用真实交易收益(open→close)与回测对齐。
     parser.add_argument("--label-mode", type=str, default="cross_section",
                         choices=["absolute", "relative", "cross_section", "weekly_open_close"],
                         help="标签口径：cross_section=周度交易收益横截面排名(默认，与回测对齐)；"
