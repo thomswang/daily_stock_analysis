@@ -22,7 +22,7 @@ DEFAULT_PROGRESS_PATH = os.path.join("data", "kline_backfill_progress.json")
 
 
 class KlineBackfillService:
-    """kline 整段回填。"""
+    """kline 整段回填（TencentFetcher，HTTP 直连 fqkline API）。"""
 
     dataset = "kline"
 
@@ -35,9 +35,8 @@ class KlineBackfillService:
     @property
     def ingest(self):
         if self._ingest is None:
-            from src.ingest.westock_kline import WestockKlineIngestor
-
-            self._ingest = WestockKlineIngestor(db_manager=self.repo.db)
+            from src.ingest.tencent_kline import TencentKlineIngestor
+            self._ingest = TencentKlineIngestor(db_manager=self.repo.db)
         return self._ingest
 
     def run(
@@ -163,7 +162,7 @@ class KlineBackfillService:
             "first": cov2.get("first"),
             "last": cov2.get("last"),
             "rows": cov2.get("rows"),
-            "source": "WestockKline",
+            "source": "TencentFetcher",
             "start_reason": start_reason,
             "effective_start": _iso(effective_start),
         }
