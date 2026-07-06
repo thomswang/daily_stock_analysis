@@ -874,7 +874,11 @@ def _rows_to_df(rows: list, quote_by_date: Optional[Dict[date, Any]] = None) -> 
 
 
 def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
-    """从本地 stock_daily 表读取缓存的日线数据（复用主分析/回测已落的数据）。"""
+    """从本地缓存读取日线数据（复用主分析/回测已落的数据）。
+
+    优先读 stock_daily_kline（backfill.py kline 回填的数据，含 close 列）；
+    若 kline 表无数据则回退到 stock_daily（旧表，可能为空或缺 close 列）。
+    """
     try:
         from datetime import date as _date
 
@@ -884,6 +888,13 @@ def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
         end = _date.today()
         # 多取一些日历日，保证 rolling/dropna 后仍有足够交易日样本
         start = end - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
+
+        # 优先从 stock_daily_kline 读（前复权 OHLCV，数据实际所在）
+        df = repo.load_kline_df(stock_code, start, end)
+        if df is not None and not df.empty:
+            return df
+
+        # 回退到 stock_daily（旧表，兼容历史数据）
         rows = repo.get_range(stock_code, start, end)
         quote_rows = repo.get_quote_range(stock_code, start, end)
         quote_by_date = {r.date: r for r in quote_rows}
@@ -913,33 +924,21 @@ def preload_training_cache(
     end = _date.today()
     start = end - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
     repo = StockRepository()
+
+    # 优先用 load_kline_bulk 批量读 stock_daily_kline（数据实际所在）
     try:
-        all_rows = repo.get_range_bulk(symbols, start, end)
-        all_quotes = repo.get_quote_range_bulk(symbols, start, end)
-    except AttributeError:
-        # repo 未实现 bulk 方法时退回逐票读取
-        cache: Dict[str, pd.DataFrame] = {}
-        for code in symbols:
-            df = _load_cached_df(code, lookback_days)
-            if df is not None and not df.empty:
-                cache[code.strip().upper()] = df
-        return cache
+        cache = repo.load_kline_bulk(symbols, start, end)
+        if cache:
+            return cache
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("load_kline_bulk 失败，退回逐票读取: %s", exc)
 
-    # 按 code 分组
-    quote_by_code_date: Dict[str, Dict[Any, Any]] = {}
-    for q in all_quotes:
-        quote_by_code_date.setdefault(q.code.strip().upper(), {})[q.date] = q
-
+    # 回退到逐票读取
     cache: Dict[str, pd.DataFrame] = {}
-    rows_by_code: Dict[str, list] = {}
-    for r in all_rows:
-        rows_by_code.setdefault(r.code.strip().upper(), []).append(r)
-
-    for code, rows in rows_by_code.items():
-        q_map = quote_by_code_date.get(code, {})
-        df = _rows_to_df(rows, q_map)
+    for code in symbols:
+        df = _load_cached_df(code, lookback_days)
         if df is not None and not df.empty:
-            cache[code] = df
+            cache[code.strip().upper()] = df
     return cache
 
 
@@ -1032,8 +1031,8 @@ _MARKET_DF_CACHE: Dict[str, pd.DataFrame] = {}
 def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
     """读取大盘指数日线（date, close）供环境特征使用；进程内缓存，避免逐票重复查库。
 
-    数据来自本地 stock_daily（由 backfill_index.py 回填）。查不到则返回空 DataFrame，
-    build_features 会据此把大盘特征中性填 0（不影响其余流程）。
+    优先从 stock_daily_kline 读取（数据实际所在）；回退到 stock_daily（旧表）。
+    查不到则返回空 DataFrame，build_features 会据此把大盘特征中性填 0。
     """
     if index_code in _MARKET_DF_CACHE:
         return _MARKET_DF_CACHE[index_code]
@@ -1043,14 +1042,22 @@ def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
 
         from src.repositories.stock_repo import StockRepository
 
-        rows = StockRepository().get_range(index_code, _date(2000, 1, 1), _date.today())
-        if rows:
-            df = pd.DataFrame([{"date": r.date, "close": r.close} for r in rows])
+        repo = StockRepository()
+        # 优先从 stock_daily_kline 读
+        kdf = repo.load_kline_df(index_code, _date(2000, 1, 1), _date.today())
+        if kdf is not None and not kdf.empty:
+            df = kdf[["date", "close"]].copy()
             df = df.sort_values("date").reset_index(drop=True)
+        else:
+            # 回退到 stock_daily
+            rows = repo.get_range(index_code, _date(2000, 1, 1), _date.today())
+            if rows:
+                df = pd.DataFrame([{"date": r.date, "close": r.close} for r in rows])
+                df = df.sort_values("date").reset_index(drop=True)
     except Exception as exc:  # noqa: BLE001 - 缺指数不应中断预测/训练
         logger.debug("加载大盘指数 %s 失败（将中性处理）: %s", index_code, exc)
     if df.empty:
-        logger.warning("大盘指数 %s 无本地数据，环境特征将中性填 0；建议先跑 backfill_index.py", index_code)
+        logger.warning("大盘指数 %s 无本地数据，环境特征将中性填 0", index_code)
     _MARKET_DF_CACHE[index_code] = df
     return df
 
