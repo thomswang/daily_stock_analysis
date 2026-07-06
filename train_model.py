@@ -102,7 +102,8 @@ def _print_summary(summary: dict) -> None:
     print(f"激活:     {'是' if summary['is_active'] else '否'}")
     _lm = summary.get('label_mode', 'absolute')
     _algo = summary.get('algorithm', 'logistic_regression_gd')
-    _lm_txt = {'relative': '跑赢大盘(相对)', 'cross_section': '横截面强势前50%(市场中性)'}.get(_lm, '绝对涨跌')
+    _top = summary.get('top_pct', 0.5)
+    _lm_txt = {'relative': '跑赢大盘(相对)', 'cross_section': f'周度交易收益横截面强势前{_top*100:.0f}%', 'weekly_open_close': f'周度交易收益横截面强势前{_top*100:.0f}%'}.get(_lm, '绝对涨跌')
     print(f"标签口径: {_lm_txt}")
     print(f"算法:     {'LightGBM(梯度提升树)' if _algo == 'lightgbm_gbdt' else '逻辑回归'}")
     print(f"股票数:   {summary['symbol_count']}")
@@ -139,6 +140,7 @@ def _run_training(args: argparse.Namespace) -> dict:
         label_mode=args.label_mode,
         algorithm=args.algorithm,
         train_end=args.train_end,
+        top_pct=args.top_pct,
     )
     _print_summary(summary)
     return summary
@@ -187,18 +189,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all", action="store_true", help="全市场 A 股（读 stocks.index.json）")
     parser.add_argument("--index-path", type=str, default=None, help="stocks.index.json 路径（默认自动查找）")
     parser.add_argument("--limit", type=int, default=None, help="仅取前 N 只训练（试跑/控内存）")
-    parser.add_argument("--lookback", type=int, default=500, help="每只股票回溯天数（默认 500）")
+    parser.add_argument("--lookback", type=int, default=3000, help="每只股票回溯天数（默认 3000，约覆盖 2015-2026）")
     parser.add_argument("--name", type=str, default="trend_lr", help="模型名（默认 trend_lr）")
     parser.add_argument("--epochs", type=int, default=400, help="训练轮数（默认 400）")
     parser.add_argument("--lr", type=float, default=0.3, help="学习率（默认 0.3）")
     parser.add_argument("--horizon", type=int, default=5, help="标签前瞻天数=预测未来N日方向（默认 5）")
     parser.add_argument("--threshold", type=float, default=0.0, help="记为看涨所需最小未来收益（默认 0=纯方向，如 0.02=需涨超2%%）")
-    parser.add_argument("--label-mode", type=str, default="absolute",
-                        choices=["absolute", "relative", "cross_section"],
-                        help="标签口径：absolute=绝对涨跌(默认)；relative=是否跑赢大盘；"
-                             "cross_section=当日横截面强势前50%%(市场中性/纯选股)")
-    parser.add_argument("--algorithm", type=str, default="logistic", choices=["logistic", "lightgbm"],
-                        help="模型：logistic=逻辑回归(默认)；lightgbm=梯度提升树(学非线性/交互)")
+    parser.add_argument("--label-mode", type=str, default="cross_section",
+                        choices=["absolute", "relative", "cross_section", "weekly_open_close"],
+                        help="标签口径：cross_section=周度交易收益横截面排名(默认，与回测对齐)；"
+                             "absolute=绝对涨跌；relative=是否跑赢大盘")
+    parser.add_argument("--algorithm", type=str, default="lightgbm", choices=["logistic", "lightgbm"],
+                        help="模型：lightgbm=梯度提升树(默认，学非线性/交互)；logistic=逻辑回归")
+    parser.add_argument("--top-pct", type=float, default=0.5,
+                        help="横截面正样本阈值(默认0.5=前50%%；0.2=前20%%更强的选股要求)")
     parser.add_argument("--train-end", type=str, default=None, metavar="YYYY-MM-DD",
                         help="训练截止日：只用该日期之前的样本训练（留出近期做样本外回测）")
     parser.add_argument("--no-active", action="store_true", help="训练后不设为激活版本")

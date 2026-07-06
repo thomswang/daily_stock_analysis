@@ -39,9 +39,9 @@ from src.services.prediction_service import (
     _load_daily_df,
     build_features,
     load_market_df,
-    make_forward_return,
     make_labels,
     make_labels_relative,
+    make_weekly_open_close_return,
     preload_training_cache,
     train_model,
 )
@@ -79,22 +79,28 @@ class ModelTrainingService:
         threshold: float = DEFAULT_LABEL_THRESHOLD,
         label_mode: str = "absolute",
         train_end: Optional[Any] = None,
+        top_pct: float = 0.5,
+        exclude_st: bool = True,
     ) -> tuple[np.ndarray, np.ndarray, List[str], List[Any]]:
         """遍历股票，构造并汇聚 (X, y) 训练样本。
 
         标签口径（label_mode）：
         - "absolute"：未来 horizon 日绝对涨跌（默认，与旧逻辑一致）
         - "relative"：未来 horizon 日是否跑赢大盘（沪深300），剔除大盘 β、只考 alpha
-        - "cross_section"：未来 horizon 日在**当日全市场横截面**里是否属强势前 50%
-          （先收集连续远期收益，汇聚后按交易日横向排名分强弱；天然市场中性、
-          类别均衡，基线恒 ~50%，超过即为纯选股能力）
+        - "cross_section"：周度真实交易收益(exit_close/entry_open−1)在**当日全市场横截面**
+          里是否属强势前 top_pct（默认前50%）。标签与回测执行口径完全对齐
+          （周一开盘买、周五收盘卖），天然市场中性、类别均衡。
+        - "weekly_open_close"：同 cross_section（保留为别名，向后兼容）
+
+        top_pct：横截面正样本阈值（默认0.5=前50%；0.2=前20%更强的选股要求）。
+        exclude_st：训练前剔除 ST/退市风险股（与回测/推荐口径一致，避免样本污染）。
 
         末 horizon 行无标签。
 
         Returns:
             (X, y, used_symbols, all_dates)
         """
-        is_xsec = label_mode == "cross_section"
+        is_xsec = label_mode in ("cross_section", "weekly_open_close")
         market_df = load_market_df() if label_mode == "relative" else None
         # 横截面：加载行业归属做「行业中性」排名（同日同行业内比强弱）。
         ind_map: Dict[str, str] = {}
@@ -108,6 +114,22 @@ class ModelTrainingService:
                 "[train] 横截面口径：%s（行业映射覆盖 %d 只）",
                 "行业中性排名" if ind_map else "全市场排名（无行业数据）", len(ind_map),
             )
+
+        # ST/退市风险股过滤：与回测/推荐口径一致，避免 ST 股污染训练样本
+        name_map: Dict[str, str] = {}
+        if exclude_st:
+            try:
+                from src.services.backfill import CodeListLoader
+                name_map = CodeListLoader.load_cn_name_map()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[train] 名称映射加载失败，无法过滤 ST：%s", exc)
+            if name_map:
+                before_st = len(symbols)
+                symbols = [
+                    c for c in symbols
+                    if "ST" not in (name_map.get(c.strip().upper(), "")).upper()
+                ]
+                logger.info("[train] 剔除 ST 股 %d 只，剩余 %d 只", before_st - len(symbols), len(symbols))
         X_parts: List[np.ndarray] = []
         y_parts: List[np.ndarray] = []       # absolute/relative：直接是 0/1 标签
         fwd_parts: List[np.ndarray] = []     # cross_section：连续远期收益，稍后横向排名
@@ -158,8 +180,14 @@ class ModelTrainingService:
             d_i = usable["date"].tolist()
 
             if is_xsec:
-                # 连续远期收益，末 horizon 行剔除；NaN 行按行剔除
-                fwd_all = make_forward_return(feats["close"], horizon=horizon)
+                # 周度真实交易收益：信号日后下一交易日开盘买、入场周最后交易日收盘卖
+                # （exit_close/entry_open−1），与回测执行口径完全对齐
+                open_aligned = pd.DataFrame({"date": pd.to_datetime(df["date"]), "open": df["open"]}).merge(
+                    pd.DataFrame({"date": pd.to_datetime(feats["date"])}),
+                    on="date",
+                    how="right",
+                )["open"]
+                fwd_all = make_weekly_open_close_return(feats["date"], open_aligned, feats["close"])
                 v_i = fwd_all.iloc[:-horizon].to_numpy()
                 valid = ~np.isnan(v_i)
                 if not valid.all():
@@ -216,7 +244,7 @@ class ModelTrainingService:
             logger.info("[train] 训练截止 %s：%d → %d 条", cutoff.date(), n_before, len(all_dates))
 
         if is_xsec:
-            # ── 横截面排名：按远期收益在「同日(同行业)」内排名，前 50% 记 1 ──
+            # ── 横截面排名：按周度真实交易收益在「同日(同行业)」内排名，前 top_pct 记 1 ──
             fwd = np.concatenate(fwd_parts)
             dser = pd.to_datetime(pd.Series(all_dates), errors="coerce")
             frame = pd.DataFrame({"d": dser.values, "ind": ind_parts, "fwd": fwd})
@@ -230,15 +258,16 @@ class ModelTrainingService:
                 min_cnt = MIN_NAMES_PER_DAY
             pct = grp.rank(pct=True, method="average").to_numpy()   # 组内分位 (0,1]
             cnt = grp.transform("count").to_numpy()                 # 组内样本数
-            y = (pct > 0.5).astype(float)
+            y = (pct > (1.0 - top_pct)).astype(float)
             keep = cnt >= min_cnt
             if not keep.all():
                 X, y = X[keep], y[keep]
                 all_dates = [d for d, k in zip(all_dates, keep) if k]
             logger.info(
-                "[train] 横截面标签(%s)：保留 %d 条，正样本占比 %.1f%%",
+                "[train] 横截面标签(%s, top %.0f%%)：保留 %d 条，正样本占比 %.1f%%",
                 "行业中性" if neutralized else "全市场",
-                len(y), 100.0 * float(y.mean()) if len(y) else 0.0,
+                top_pct * 100, len(y),
+                100.0 * float(y.mean()) if len(y) else 0.0,
             )
             return X, y, used_symbols, all_dates
 
@@ -249,7 +278,7 @@ class ModelTrainingService:
         self,
         symbols: List[str],
         *,
-        lookback_days: int = 500,
+        lookback_days: int = 1500,
         model_name: str = DEFAULT_MODEL_NAME,
         epochs: int = 400,
         lr: float = 0.3,
@@ -259,15 +288,17 @@ class ModelTrainingService:
         set_active: bool = True,
         refresh: bool = True,
         notes: Optional[str] = None,
-        label_mode: str = "absolute",
-        algorithm: str = "logistic",
+        label_mode: str = "cross_section",
+        algorithm: str = "lightgbm",
         train_end: Optional[Any] = None,
+        top_pct: float = 0.5,
+        exclude_st: bool = True,
     ) -> Dict[str, Any]:
         """执行训练并持久化，返回训练摘要。
 
         Args:
             symbols: 参与训练的股票代码列表
-            lookback_days: 每只股票的回溯天数
+            lookback_days: 每只股票的回溯天数（默认1500≈覆盖6年，充分利用长历史）
             model_name: 模型名（同名下按版本管理，新版本自动激活）
             epochs/lr/l2: 训练超参
             horizon: 标签前瞻天数（预测"未来 horizon 日"方向，默认 5，与预测/回测一致）
@@ -275,7 +306,11 @@ class ModelTrainingService:
             set_active: 训练完成后是否设为激活版本（供预测使用）
             refresh: 是否联网刷新数据（False 则纯用本地缓存，适合离线补训）
             notes: 备注
-            label_mode: "absolute"=绝对涨跌（默认）；"relative"=是否跑赢大盘（剔除大盘 β）
+            label_mode: "cross_section"=周度真实交易收益横截面排名(默认，与回测对齐)；
+                        "absolute"=绝对涨跌；"relative"=是否跑赢大盘
+            algorithm: "lightgbm"=梯度提升树(默认)；"logistic"=逻辑回归
+            top_pct: 横截面正样本阈值(默认0.5=前50%；0.2=前20%)
+            exclude_st: 训练前剔除 ST/退市风险股(默认True，与回测/推荐口径一致)
 
         Returns:
             训练摘要字典（版本、样本数、指标等）
@@ -284,13 +319,16 @@ class ModelTrainingService:
             raise ModelTrainingError("训练股票列表为空")
 
         _lm = str(label_mode).lower()
-        label_mode = _lm if _lm in ("relative", "cross_section") else "absolute"
+        label_mode = _lm if _lm in ("relative", "cross_section", "weekly_open_close") else "absolute"
         algorithm = "lightgbm" if str(algorithm).lower() in ("lightgbm", "lgbm", "gbdt") else "logistic"
-        lookback_days = int(max(120, min(lookback_days, 1200)))
+        lookback_days = int(max(120, min(lookback_days, 3500)))
         horizon = int(max(1, min(horizon, 20)))
+        top_pct = float(max(0.05, min(top_pct, 0.95)))
         started = datetime.now()
         _lm_label = {
-            "relative": "跑赢大盘", "cross_section": "横截面强势前50%",
+            "relative": "跑赢大盘",
+            "cross_section": f"周度交易收益横截面强势前{top_pct*100:.0f}%",
+            "weekly_open_close": f"周度交易收益横截面强势前{top_pct*100:.0f}%",
         }.get(label_mode, "绝对涨跌")
         logger.info(
             "[train] 开始训练：模型=%s，股票=%d 只，回溯=%d 天，标签=未来%d日(%s)，联网刷新=%s",
@@ -300,7 +338,7 @@ class ModelTrainingService:
         X, y, used_symbols, all_dates = self._collect_samples(
             symbols, lookback_days, refresh=refresh,
             horizon=horizon, threshold=threshold, label_mode=label_mode,
-            train_end=train_end,
+            train_end=train_end, top_pct=top_pct, exclude_st=exclude_st,
         )
 
         logger.info(
@@ -308,7 +346,7 @@ class ModelTrainingService:
             len(X), len(used_symbols), 100.0 * float(y.mean()) if len(y) else 0.0,
         )
 
-        # 传入与 X 行对齐的日期，启用“全局时序切分”（按日历切 train/valid，
+        # 传入与 X 行对齐的日期，启用"全局时序切分"（按日历切 train/valid，
         # 避免多股票堆叠时按行切退化成按股票切、时间段重叠而泄露）。
         dates_arr = pd.to_datetime(pd.Series(all_dates), errors="coerce").to_numpy()
         model, metrics = train_model(
@@ -323,7 +361,7 @@ class ModelTrainingService:
         start_date = min(_norm_dates) if _norm_dates else None
         end_date = max(_norm_dates) if _norm_dates else None
 
-        # 把标签口径写进 notes（相对模型的 up_probability 语义是“跑赢大盘概率”，
+        # 把标签口径写进 notes（相对模型的 up_probability 语义是"跑赢大盘概率"，
         # 供预测/展示层区分绝对涨跌 vs 相对超额）。
         _mode_tag = f"label_mode={label_mode}"
         notes = f"{_mode_tag}; {notes}" if notes else _mode_tag
@@ -351,6 +389,7 @@ class ModelTrainingService:
             "is_active": set_active,
             "label_mode": label_mode,
             "algorithm": model.to_params().get("algorithm", "logistic_regression_gd"),
+            "top_pct": top_pct,
             "symbol_count": len(used_symbols),
             "trained_symbols": used_symbols,
             "total_samples": int(len(X)),

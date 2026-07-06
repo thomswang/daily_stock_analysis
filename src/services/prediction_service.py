@@ -132,6 +132,33 @@ def make_forward_return(
     return close.shift(-horizon) / close - 1.0
 
 
+def make_weekly_open_close_return(
+    dates: pd.Series,
+    open_: pd.Series,
+    close: pd.Series,
+) -> pd.Series:
+    """真实周度交易收益：信号日后下一交易日开盘买，入场周最后交易日收盘卖。"""
+    d = pd.to_datetime(pd.Series(list(dates)), errors="coerce").reset_index(drop=True)
+    op = pd.to_numeric(pd.Series(list(open_)), errors="coerce").reset_index(drop=True)
+    cl = pd.to_numeric(pd.Series(list(close)), errors="coerce").reset_index(drop=True)
+    out = pd.Series(np.nan, index=range(len(d)), dtype=float)
+    if len(d) < 2:
+        return out
+
+    iso = d.dt.isocalendar()
+    week_key = (iso["year"].astype(int) * 100 + iso["week"].astype(int)).to_numpy()
+    for i in range(len(d) - 1):
+        entry_i = i + 1
+        key = week_key[entry_i]
+        exit_i = entry_i
+        while exit_i + 1 < len(d) and week_key[exit_i + 1] == key:
+            exit_i += 1
+        entry_open = float(op.iloc[entry_i]) if pd.notna(op.iloc[entry_i]) else np.nan
+        exit_close = float(cl.iloc[exit_i]) if pd.notna(cl.iloc[exit_i]) else np.nan
+        if np.isfinite(entry_open) and entry_open > 0 and np.isfinite(exit_close):
+            out.iloc[i] = exit_close / entry_open - 1.0
+    return out
+
 def make_labels_relative(
     close: pd.Series,
     market_close: pd.Series,
@@ -352,7 +379,7 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
         else pd.Series(np.nan, index=data.index)
     )
 
-    ret = close.pct_change()
+    ret = close.pct_change(fill_method=None)
     prev_close = close.shift(1)
 
     ma5 = close.rolling(5, min_periods=5).mean()
@@ -852,6 +879,51 @@ def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def preload_training_cache(
+    symbols: List[str], lookback_days: int,
+) -> Dict[str, pd.DataFrame]:
+    """批量预加载多只股票的本地缓存日线，供离线训练（refresh=False）一次读取。
+
+    比逐票 _load_cached_df 快得多：只打开一次 SQLite 连接做全量扫描，再按 code 分组。
+    失败的票跳过（返回字典中不含该 key），调用方按缺失处理。
+    """
+    from datetime import date as _date
+
+    from src.repositories.stock_repo import StockRepository
+
+    end = _date.today()
+    start = end - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
+    repo = StockRepository()
+    try:
+        all_rows = repo.get_range_bulk(symbols, start, end)
+        all_quotes = repo.get_quote_range_bulk(symbols, start, end)
+    except AttributeError:
+        # repo 未实现 bulk 方法时退回逐票读取
+        cache: Dict[str, pd.DataFrame] = {}
+        for code in symbols:
+            df = _load_cached_df(code, lookback_days)
+            if df is not None and not df.empty:
+                cache[code.strip().upper()] = df
+        return cache
+
+    # 按 code 分组
+    quote_by_code_date: Dict[str, Dict[Any, Any]] = {}
+    for q in all_quotes:
+        quote_by_code_date.setdefault(q.code.strip().upper(), {})[q.date] = q
+
+    cache: Dict[str, pd.DataFrame] = {}
+    rows_by_code: Dict[str, list] = {}
+    for r in all_rows:
+        rows_by_code.setdefault(r.code.strip().upper(), []).append(r)
+
+    for code, rows in rows_by_code.items():
+        q_map = quote_by_code_date.get(code, {})
+        df = _rows_to_df(rows, q_map)
+        if df is not None and not df.empty:
+            cache[code] = df
+    return cache
+
+
 def _is_cache_fresh(df: pd.DataFrame, max_stale_days: int = 4) -> bool:
     """判断缓存是否够新：最新一条数据距今不超过 max_stale_days 个自然日。
 
@@ -1089,7 +1161,7 @@ def predict_stock(
     factors.sort(key=lambda f: abs(f["contribution"]), reverse=True)
 
     # 近期波动率（日收益标准差），给价格推演用
-    daily_returns = feats["close"].pct_change().dropna()
+    daily_returns = feats["close"].pct_change(fill_method=None).dropna()
     daily_vol = float(daily_returns.tail(60).std()) if len(daily_returns) else 0.02
     if not np.isfinite(daily_vol) or daily_vol <= 0:
         daily_vol = 0.02
