@@ -35,7 +35,26 @@ class ProgressLedger:
         tmp = f"{self.path}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.data, f, ensure_ascii=False, indent=1)
-        os.replace(tmp, self.path)
+
+        # Windows 下 os.replace 偶发 PermissionError（IDE/杀软占用目标文件），
+        # 重试 3 次，每次间隔递增。
+        last_err = None
+        for attempt in range(3):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError as exc:
+                last_err = exc
+                import time
+                time.sleep(0.1 * (attempt + 1))
+        # 重试失败：退回直接写入（非原子，但保证数据不丢）
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=1)
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            raise last_err
 
     def get(self, code: str) -> Dict[str, Any]:
         return self.data["codes"].get(code, {})

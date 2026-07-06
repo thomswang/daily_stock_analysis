@@ -83,8 +83,6 @@ FEATURE_ORDER = list(FEATURE_LABELS.keys())
 # 数据源/入参可能不提供的扩展特征：整列缺失时以 0(中性)填充，
 # 避免这些列的 NaN 把整只股票的样本在 dropna 时清空
 # （兼容无换手率的兜底源，以及未传入 market_df 的调用方）。
-# 注意：westock kline 回填的 turnover_rate 在 2016–2017 常为 0（源接口 exchange 未填），
-# 2018 起逐步有值；老样本上 turnover_norm/turnover_rel 不应解读为真实换手。
 _MARKET_FEATURES = (
     "mkt_ma20_dev", "mkt_momentum_20", "mkt_rsi_14", "mkt_volatility_20",
     "rel_strength_5", "rel_strength_20",
@@ -804,12 +802,21 @@ def project_price_path(
 def _rows_to_df(rows: list, quote_by_date: Optional[Dict[date, Any]] = None) -> pd.DataFrame:
     """把 StockDaily ORM 行转换为特征工程所需的日线 DataFrame。
 
-    换手率权威源：stock_daily_quote（quote --date 截面）。
+    换手率**权威源**为 stock_daily_quote（quote --date 截面，逐日 40 列）；
+    stock_daily 的同名列已 deprecated（各源 kline 口径差异大，会污染训练数据）。
+    如需临时兼容旧库，设置环境变量 ``DSA_LEGACY_TURNOVER_FALLBACK=1`` 打开退回。
     """
     quote_by_date = quote_by_date or {}
+    allow_legacy = os.getenv("DSA_LEGACY_TURNOVER_FALLBACK", "").lower() in ("1", "true", "yes")
     records = []
     for r in rows:
         q = quote_by_date.get(r.date)
+        if q is not None:
+            turnover = q.turnover_rate
+        elif allow_legacy:
+            turnover = getattr(r, "turnover_rate", None)
+        else:
+            turnover = None
         records.append({
             "date": r.date,
             "open": r.open,
@@ -817,7 +824,7 @@ def _rows_to_df(rows: list, quote_by_date: Optional[Dict[date, Any]] = None) -> 
             "low": r.low,
             "close": r.close,
             "volume": r.volume,
-            "turnover_rate": q.turnover_rate if q else None,
+            "turnover_rate": turnover,
         })
     df = pd.DataFrame.from_records(records)
     if not df.empty:
@@ -826,61 +833,23 @@ def _rows_to_df(rows: list, quote_by_date: Optional[Dict[date, Any]] = None) -> 
 
 
 def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
-    """从本地 stock_daily + quote JOIN 读取（单票，一次 SQL）。"""
+    """从本地 stock_daily 表读取缓存的日线数据（复用主分析/回测已落的数据）。"""
     try:
-        from src.repositories.stock_repo import StockRepository, compute_training_date_range
+        from datetime import date as _date
+
+        from src.repositories.stock_repo import StockRepository
 
         repo = StockRepository()
-        start, end = compute_training_date_range(lookback_days)
-        df = repo.load_merged_df(stock_code, start, end)
-        if df.empty:
-            return pd.DataFrame()
-        if "last" in df.columns and "close" not in df.columns:
-            df = df.copy()
-            df["close"] = df["last"]
-        cols = ["date", "open", "high", "low", "close", "last", "volume", "turnover_rate"]
-        return df[[c for c in cols if c in df.columns]].sort_values("date").reset_index(drop=True)
+        end = _date.today()
+        # 多取一些日历日，保证 rolling/dropna 后仍有足够交易日样本
+        start = end - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
+        rows = repo.get_range(stock_code, start, end)
+        quote_rows = repo.get_quote_range(stock_code, start, end)
+        quote_by_date = {r.date: r for r in quote_rows}
+        return _rows_to_df(rows, quote_by_date) if rows else pd.DataFrame()
     except Exception as exc:  # noqa: BLE001 - 缓存读取失败不应中断预测
         logger.debug("读取 %s 的本地缓存失败，将走网络: %s", stock_code, exc)
         return pd.DataFrame()
-
-
-def preload_training_cache(
-    symbols: List[str],
-    lookback_days: int,
-    *,
-    end_date: Optional[date] = None,
-    batch_size: Optional[int] = None,
-) -> Dict[str, pd.DataFrame]:
-    """训练前批量预读：全市场一次（或少量批次）JOIN，避免 N+1 查库。
-
-    返回 {CODE: DataFrame}，列含 date/open/high/low/close/volume/turnover_rate。
-    仅含本地已有数据的股票；无数据的不出现在 dict 中。
-    """
-    import time
-
-    from src.repositories.stock_repo import (
-        DEFAULT_TRAIN_BULK_BATCH,
-        compute_training_date_range,
-    )
-    from src.repositories.training_bars import load_training_bars_bulk, resolve_train_bar_source
-
-    codes = [(s or "").strip().upper() for s in symbols if (s or "").strip()]
-    if not codes:
-        return {}
-
-    start, end = compute_training_date_range(lookback_days, end_date=end_date)
-    bs = batch_size if batch_size is not None else DEFAULT_TRAIN_BULK_BATCH
-    src = resolve_train_bar_source()
-    t0 = time.time()
-    cache = load_training_bars_bulk(codes, start, end, source=src, batch_size=bs)
-
-    elapsed = time.time() - t0
-    logger.info(
-        "[train-preload] source=%s 批量读库：请求 %d 只，命中 %d 只，区间 %s~%s，耗时 %.2fs",
-        src.value, len(codes), len(cache), start, end, elapsed,
-    )
-    return cache
 
 
 def _is_cache_fresh(df: pd.DataFrame, max_stale_days: int = 4) -> bool:
