@@ -112,7 +112,12 @@ def print_progress_status(progress_path: str, *, dataset: str) -> None:
     ledger = ProgressLedger(progress_path)
     meta = ledger.data.get("meta", {})
     summary = ledger.summary()
-    title = "quote 回填进度台账" if dataset == "quote" else "kline 回填进度台账"
+    if dataset == "quote":
+        title = "quote 回填进度台账"
+    elif dataset == "baidu":
+        title = "baidu 回填进度台账"
+    else:
+        title = "kline 回填进度台账"
     print(f"\n===== {title} =====")
     print(f"文件:     {progress_path}")
     extra = f"  复权={meta.get('adj_type')}" if meta.get("adj_type") else ""
@@ -171,9 +176,37 @@ def run_kline(args: argparse.Namespace) -> dict:
     )
 
 
+def run_baidu(args: argparse.Namespace) -> dict:
+    from src.services.backfill import BaiduBackfillService
+
+    codes = resolve_codes(args)
+    logger.info("准备 baidu 回填：%d 只股票", len(codes))
+    return BaiduBackfillService().run(
+        codes,
+        start_date=args.start,
+        end_date=args.end,
+        mode=args.mode,
+        sleep=args.sleep,
+        retry=args.retry,
+        fresh_days=args.fresh_days,
+        force=args.force,
+        retry_failed=args.retry_failed,
+        limit=args.limit,
+        progress_path=args.progress,
+        ktype=args.ktype,
+    )
+
+
 def print_summary(stats: dict, *, dataset: str) -> None:
-    label = "quote" if dataset == "quote" else "kline"
-    rows_key = "quote_rows" if dataset == "quote" else "kline_rows"
+    if dataset == "quote":
+        label = "quote"
+        rows_key = "quote_rows"
+    elif dataset == "baidu":
+        label = "baidu"
+        rows_key = "baidu_rows"
+    else:
+        label = "kline"
+        rows_key = "kline_rows"
     print(f"\n===== {label} 回填完成 =====")
     print(f"计划总数: {stats['total']}")
     print(f"实际拉取: {stats['fetched']}")
@@ -243,6 +276,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="复权类型（默认 qfq 前复权）",
     )
 
+    baidu = sub.add_parser(
+        "baidu",
+        help="百度股市通 K 线 → stock_daily_baidu（含换手率/振幅/MA，单表）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "示例:\n"
+            "  python backfill.py baidu --all --mode range --start 2015-01-01 --end 2026-07-03 \\\n"
+            "    --progress data/baidu_progress.json --retry 3 --ktype 1\n"
+        ),
+    )
+    add_code_source_args(baidu)
+    add_run_args(
+        baidu,
+        defaults=argparse.Namespace(
+            start="2010-01-01",
+            mode="full",
+            fresh_days=4,
+            retry=2,
+            sleep=0.0,
+            progress=os.path.join("data", "baidu_backfill_progress.json"),
+        ),
+    )
+    baidu.add_argument(
+        "--ktype", type=str, default="1", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+        help="K 线类型（默认 1=日线；单表内以 ktype 区分，不分表）",
+    )
+
     return parser
 
 
@@ -278,7 +338,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
 
-    runner = run_quote if args.dataset == "quote" else run_kline
+    if args.dataset == "baidu":
+        runner = run_baidu
+    else:
+        runner = run_quote if args.dataset == "quote" else run_kline
     stats = runner(args)
     print_summary(stats, dataset=args.dataset)
     return 0

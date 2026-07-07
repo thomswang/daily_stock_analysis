@@ -260,7 +260,64 @@ class StockDailyQuote(Base):
     def __repr__(self):
         return (
             f"<StockDailyQuote(code={self.code}, date={self.date}, "
-            f"turnover={self.turnover_rate})>"
+                f"turnover={self.turnover_rate})>"
+            )
+
+
+class StockDailyBaidu(Base):
+    """
+    百度股市通 K 线原始落地表（单表，不复权/前复权由 ktype 区分，不分表）。
+
+    数据源：百度股市通 getstockquotation（HTTP）。该接口 K 线自带换手率
+    turnoverratio、振幅、涨跌幅、MA 等字段，且能稳定回溯多年（已验证可到 2018）。
+
+    设计取舍：
+    - 单表承载所有 baidu 返回值，按 (code, date, ktype) 唯一；不再按年份/代码分表。
+    - raw_row 留存接口原始分号行（全字段），保证「把 baidu 的返回全部填进去」且可
+      随时按接口 keys 顺序重新解析，不丢字段；其余列为常用字段的结构化投影，便于直查。
+    - volume 单位=股（与百度一致），amount 单位=元；与 stock_daily_kline 的
+      volume(股) 口径一致，join 无需换算。
+    """
+
+    __tablename__ = "stock_daily_baidu"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(16), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    ktype = Column(String(8), nullable=False, default="1", index=True)  # 1=日线
+
+    # 结构化常用字段（投影自 raw_row）
+    open = Column(Float)
+    high = Column(Float)
+    low = Column(Float)
+    close = Column(Float)
+    volume = Column(Float)            # 成交量（股）
+    amount = Column(Float)            # 成交额（元）
+    amplitude = Column(Float)         # 振幅（%）
+    pct_change = Column(Float)        # 涨跌幅（%）
+    turnover_rate = Column(Float)     # 换手率（%）
+    pre_close = Column(Float)         # 昨收
+    ma5 = Column(Float)               # ma5avgprice
+    ma10 = Column(Float)              # ma10avgprice
+    ma20 = Column(Float)              # ma20avgprice
+
+    # 接口返回的原始行（分号分隔多字段，按接口 keys 顺序解析），保证零丢失
+    raw_row = Column(Text)
+
+    data_source = Column(String(50), default="BaiduFetcher")
+    fetched_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("code", "date", "ktype", name="uix_baidu_code_date_ktype"),
+        Index("ix_baidu_code_date_ktype", "code", "date", "ktype"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<StockDailyBaidu(code={self.code}, date={self.date}, "
+            f"ktype={self.ktype}, close={self.close})>"
         )
 
 
@@ -3136,6 +3193,170 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         except Exception as exc:
             logger.error("保存 %s kline 失败: %s", code, exc)
             raise
+
+    def save_baidu_kline(
+        self,
+        df: pd.DataFrame,
+        code: str,
+        *,
+        data_source: str = "BaiduFetcher",
+        ktype: str = "1",
+    ) -> int:
+        """保存百度股市通 K 线到 stock_daily_baidu（code+date+ktype upsert）。
+
+        单表承载所有 baidu 返回值：结构化字段投影 + raw_row 原始行（零丢失）。
+        SQLite 分支按 chunk upsert 避免绑定参数上限；冲突时覆盖更新。
+        """
+        if df is None or df.empty:
+            logger.warning("保存 baidu kline 为空，跳过 %s", code)
+            return 0
+
+        structured_fields = [
+            "open", "high", "low", "close", "volume", "amount",
+            "amplitude", "pct_change", "turnover_rate", "pre_close",
+            "ma5", "ma10", "ma20",
+        ]
+        now = datetime.now()
+        records_by_key: Dict[Tuple[str, date], Dict[str, Any]] = {}
+        for row in df.to_dict(orient="records"):
+            row_date = self._normalize_daily_date(row.get("date"))
+            if row_date is None:
+                continue
+            payload: Dict[str, Any] = {
+                "code": code,
+                "date": row_date,
+                "ktype": row.get("ktype") or ktype,
+                "data_source": data_source,
+                "raw_row": row.get("raw_row"),
+                "created_at": now,
+                "updated_at": now,
+            }
+            for field in structured_fields:
+                payload[field] = self._normalize_sql_value(row.get(field))
+            records_by_key[(code, row_date)] = payload
+
+        if not records_by_key:
+            return 0
+
+        rows = list(records_by_key.values())
+        batch_dates = list({p["date"] for p in rows})
+
+        def _write(session: Session) -> int:
+            if self._is_sqlite_engine:
+                _CHUNK = 40
+                existing_keys = set()
+                for j in range(0, len(batch_dates), 500):
+                    chunk_dates = batch_dates[j : j + 500]
+                    if not chunk_dates:
+                        continue
+                    existing_keys.update(
+                        session.execute(
+                            select(StockDailyBaidu.code, StockDailyBaidu.date).where(
+                                and_(
+                                    StockDailyBaidu.code == code,
+                                    StockDailyBaidu.date.in_(chunk_dates),
+                                )
+                            )
+                        ).all()
+                    )
+                new_count = sum(
+                    1 for p in rows if (p["code"], p["date"]) not in existing_keys
+                )
+                for i in range(0, len(rows), _CHUNK):
+                    chunk = rows[i : i + _CHUNK]
+                    stmt = sqlite_insert(StockDailyBaidu).values(chunk)
+                    excluded = stmt.excluded
+                    update_map = {f: getattr(excluded, f) for f in structured_fields}
+                    update_map["raw_row"] = excluded.raw_row
+                    update_map["data_source"] = excluded.data_source
+                    update_map["updated_at"] = excluded.updated_at
+                    session.execute(
+                        stmt.on_conflict_do_update(
+                            index_elements=["code", "date", "ktype"],
+                            set_=update_map,
+                        )
+                    )
+                return new_count
+
+            existing_rows = {
+                (row.code, row.date): row
+                for row in session.execute(
+                    select(StockDailyBaidu).where(
+                        and_(
+                            StockDailyBaidu.code == code,
+                            StockDailyBaidu.date.in_(batch_dates),
+                        )
+                    )
+                ).scalars().all()
+            }
+            new_count = 0
+            for record in rows:
+                existing = existing_rows.get((record["code"], record["date"]))
+                if existing is None:
+                    session.add(StockDailyBaidu(**record))
+                    new_count += 1
+                    continue
+                for field in structured_fields:
+                    setattr(existing, field, record.get(field))
+                existing.raw_row = record["raw_row"]
+                existing.data_source = record["data_source"]
+                existing.updated_at = record["updated_at"]
+            return new_count
+
+        try:
+            saved = self._run_write_transaction(
+                f"save_baidu_kline[{code}]",
+                _write,
+            )
+            logger.info("保存 %s baidu kline(%s) %d 条", code, ktype, saved)
+            return saved
+        except Exception as exc:
+            logger.error("保存 %s baidu kline 失败: %s", code, exc)
+            raise
+
+    def get_baidu_kline(
+        self,
+        code: str,
+        *,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+        ktype: str = "1",
+    ) -> List[Dict[str, Any]]:
+        """查询百度股市通 K 线（按 code + 日期区间，升序）。"""
+        with self.get_session() as session:
+            stmt = select(StockDailyBaidu).where(StockDailyBaidu.code == code)
+            if ktype:
+                stmt = stmt.where(StockDailyBaidu.ktype == ktype)
+            if start_date is not None:
+                stmt = stmt.where(StockDailyBaidu.date >= start_date)
+            if end_date is not None:
+                stmt = stmt.where(StockDailyBaidu.date <= end_date)
+            stmt = stmt.order_by(StockDailyBaidu.date)
+            rows = session.execute(stmt).scalars().all()
+            return [
+                {
+                    "code": r.code,
+                    "date": r.date.isoformat() if r.date else None,
+                    "ktype": r.ktype,
+                    "open": r.open,
+                    "high": r.high,
+                    "low": r.low,
+                    "close": r.close,
+                    "volume": r.volume,
+                    "amount": r.amount,
+                    "amplitude": r.amplitude,
+                    "pct_change": r.pct_change,
+                    "turnover_rate": r.turnover_rate,
+                    "pre_close": r.pre_close,
+                    "ma5": r.ma5,
+                    "ma10": r.ma10,
+                    "ma20": r.ma20,
+                    "raw_row": r.raw_row,
+                    "data_source": r.data_source,
+                    "fetched_at": r.fetched_at.isoformat() if r.fetched_at else None,
+                }
+                for r in rows
+            ]
 
     def get_analysis_context(
         self, 

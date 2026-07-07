@@ -2,6 +2,9 @@
 """回填子系统：台账、清单、编排、quote/kline 服务。"""
 
 from .code_list import BackfillError, CodeListLoader
+from .baidu_service import DEFAULT_PROGRESS_PATH as BAIDU_DEFAULT_PROGRESS_PATH
+from .baidu_service import DEFAULT_START_DATE as BAIDU_DEFAULT_START_DATE
+from .baidu_service import BaiduBackfillService
 from .kline_service import DEFAULT_PROGRESS_PATH as KLINE_DEFAULT_PROGRESS_PATH
 from .kline_service import DEFAULT_START_DATE as KLINE_DEFAULT_START_DATE
 from .kline_service import KlineBackfillService
@@ -14,6 +17,9 @@ from .segment_planner import is_no_data_error, parse_date, plan_segments
 
 __all__ = [
     "BackfillError",
+    "BaiduBackfillService",
+    "BAIDU_DEFAULT_PROGRESS_PATH",
+    "BAIDU_DEFAULT_START_DATE",
     "CodeListLoader",
     "KlineBackfillService",
     "KLINE_DEFAULT_PROGRESS_PATH",

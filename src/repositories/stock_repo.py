@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any, Iterable, Tuple
 import pandas as pd
 from sqlalchemy import and_, desc, func, select
 
-from src.storage import DatabaseManager, StockDaily, StockDailyKline, StockDailyQuote
+from src.storage import DatabaseManager, StockDaily, StockDailyKline, StockDailyQuote, StockDailyBaidu
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +388,32 @@ class StockRepository:
             return {"first": first, "last": last, "rows": int(cnt or 0)}
         except Exception as e:
             logger.error("查询 %s kline 覆盖失败: %s", code, e)
+            return {"first": None, "last": None, "rows": 0}
+
+    def get_baidu_coverage(
+        self,
+        code: str,
+        *,
+        ktype: str = "1",
+    ) -> Dict[str, Any]:
+        """查询 stock_daily_baidu 已存最早/最晚日期与条数。"""
+        try:
+            with self.db.get_session() as session:
+                first, last, cnt = session.execute(
+                    select(
+                        func.min(StockDailyBaidu.date),
+                        func.max(StockDailyBaidu.date),
+                        func.count(),
+                    ).where(
+                        and_(
+                            StockDailyBaidu.code == code,
+                            StockDailyBaidu.ktype == ktype,
+                        )
+                    )
+                ).one()
+            return {"first": first, "last": last, "rows": int(cnt or 0)}
+        except Exception as e:
+            logger.error("查询 %s baidu 覆盖失败: %s", code, e)
             return {"first": None, "last": None, "rows": 0}
 
     def load_kline_bulk(
