@@ -21,8 +21,10 @@ token 获取有两种方式（按优先级）：
 
 ``BaiduBackfillService`` 已默认接入方式 1，开箱即用、无需手动粘贴 token。
 
-marketData 字段顺序与旧接口一致（open=2/close=3/.../ma20=14），故解析逻辑完全复用，
-落库列（date/open/high/low/close/volume/amount/pct_change）亦不变。
+marketData 字段顺序与百度 getquotation keys 完全一致（见 _BAIDU_FIELD_INDEX），
+落库列（date/open/high/low/close/volume/amount/range/ratio/turnoverratio/preClose/
+ma5avgprice/ma5volume/ma10avgprice/ma10volume/ma20avgprice/ma20volume/timestamp/time）
+与百度 keys 保持一致。
 """
 
 from __future__ import annotations
@@ -73,26 +75,43 @@ def _to_unix_ts(value: Optional[str]) -> Optional[str]:
         return v
 
 
-# 解析时按接口字段顺序定位（索引从 0 开始）；time 在索引 1，日期取前 10 位。
-# vapi 与旧接口在该区间字段顺序完全一致（ma5/10/20 仍在 12/13/14）。
-_FIELD_INDEX = {
+# 百度 getquotation 响应的原始 keys（字段顺序，索引从 0 开始，来自接口 keys 元数据）：
+# ['timestamp','time','open','close','volume','high','low','amount',
+#  'range','ratio','turnoverratio','preClose',
+#  'ma5avgprice','ma5volume','ma10avgprice','ma10volume','ma20avgprice','ma20volume']
+# 注意：百度把 position 8 标为 range，但其真实含义是「涨跌额(change)」而非振幅；
+#       此处按需求“字段与百度一致”，沿用百度原始命名，不做语义纠正。
+#       旧代码把 ma10/ma20 指到 13/14，实际 13=ma5volume、14=ma10avgprice、16=ma20avgprice，
+#       已在此按 keys 顺序修正，并补全 ma5/10/20 的成交量 MA。
+_BAIDU_FIELD_INDEX = {
+    "timestamp": 0,
+    "time": 1,
     "open": 2,
     "close": 3,
     "volume": 4,
     "high": 5,
     "low": 6,
     "amount": 7,
-    "amplitude": 8,   # range 振幅
-    "pct_change": 9,  # ratio 涨跌幅
-    "turnover_rate": 10,  # turnoverratio 换手率%
-    "pre_close": 11,  # preClose
-    "ma5": 12,        # ma5avgprice
-    "ma10": 13,       # ma10avgprice
-    "ma20": 14,       # ma20avgprice
+    "range": 8,          # 百度 keys 标 range（实为涨跌额 change）
+    "ratio": 9,          # 涨跌幅（%）
+    "turnoverratio": 10, # 换手率（%）
+    "preClose": 11,      # 昨收
+    "ma5avgprice": 12,
+    "ma5volume": 13,
+    "ma10avgprice": 14,
+    "ma10volume": 15,
+    "ma20avgprice": 16,
+    "ma20volume": 17,
 }
 
+# 字符串型字段（不参与数值化）
+_BAIDU_STR_FIELDS = {"time"}
+
+# 百度全字段列表（落库结构化字段，顺序与 keys 一致）
+_BAIDU_STRUCTURED_FIELDS = list(_BAIDU_FIELD_INDEX.keys())
+
 _STANDARD_KEEP = [
-    "date", "open", "high", "low", "close", "volume", "amount", "pct_change",
+    "date", "open", "high", "low", "close", "volume", "amount", "ratio",
 ]
 
 
@@ -100,15 +119,12 @@ def parse_baidu_response(payload: Optional[Dict[str, Any]], *, ktype: str = "1")
     """把百度 getquotation 响应解析为结构化 DataFrame。
 
     Returns:
-        含列的 DataFrame：date, ktype, open, high, low, close, volume, amount,
-        amplitude, pct_change, turnover_rate, pre_close, ma5, ma10, ma20, raw_row。
-        无数据返回空 DataFrame（列为上述全集）。
+        含列的 DataFrame：date, ktype, 与百度 keys 完全一致的结构化字段
+        (timestamp/time/open/close/volume/high/low/amount/range/ratio/turnoverratio/
+        preClose/ma5avgprice/ma5volume/ma10avgprice/ma10volume/ma20avgprice/ma20volume)。
+        时间字段 time 只保留日期部分（YYYY-MM-DD）。无数据返回空 DataFrame（列为上述全集）。
     """
-    columns = [
-        "date", "ktype", "open", "high", "low", "close", "volume", "amount",
-        "amplitude", "pct_change", "turnover_rate", "pre_close",
-        "ma5", "ma10", "ma20", "raw_row",
-    ]
+    columns = ["date", "ktype"] + _BAIDU_STRUCTURED_FIELDS
     if not payload:
         return pd.DataFrame(columns=columns)
 
@@ -132,9 +148,17 @@ def parse_baidu_response(payload: Optional[Dict[str, Any]], *, ktype: str = "1")
         except (ValueError, TypeError):
             continue
 
-        rec: Dict[str, Any] = {"date": date_str, "ktype": ktype, "raw_row": r}
-        for name, idx in _FIELD_INDEX.items():
-            rec[name] = _safe_float(fields[idx]) if idx < len(fields) else None
+        rec: Dict[str, Any] = {"date": date_str, "ktype": ktype}
+        for name, idx in _BAIDU_FIELD_INDEX.items():
+            if idx < len(fields):
+                if name in _BAIDU_STR_FIELDS:
+                    value = fields[idx]
+                    # 时间字段按需求只保留日期部分（YYYY-MM-DD）
+                    rec[name] = value[:10] if name == "time" and len(value) >= 10 else value
+                else:
+                    rec[name] = _safe_float(fields[idx])
+            else:
+                rec[name] = None
         records.append(rec)
 
     if not records:
@@ -263,7 +287,7 @@ class BaiduFetcher(BaseFetcher):
         end_time: Optional[str] = None,
         ktype: str = "1",
     ) -> pd.DataFrame:
-        """请求百度 vapi K 线并解析为结构化 DataFrame（含 raw_row 原始行）。"""
+        """请求百度 vapi K 线并解析为结构化 DataFrame。"""
         params = self._build_params(code, start_time, end_time, ktype)
         try:
             resp = requests.get(
@@ -344,7 +368,7 @@ class BaiduFetcher(BaseFetcher):
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
         normalized = df.copy()
-        for column in ("open", "high", "low", "close", "volume", "amount", "pct_change"):
+        for column in ("open", "high", "low", "close", "volume", "amount", "ratio"):
             if column in normalized.columns:
                 normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
         keep = [c for c in _STANDARD_KEEP if c in normalized.columns]

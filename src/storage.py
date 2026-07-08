@@ -273,8 +273,7 @@ class StockDailyBaidu(Base):
 
     设计取舍：
     - 单表承载所有 baidu 返回值，按 (code, date, ktype) 唯一；不再按年份/代码分表。
-    - raw_row 留存接口原始分号行（全字段），保证「把 baidu 的返回全部填进去」且可
-      随时按接口 keys 顺序重新解析，不丢字段；其余列为常用字段的结构化投影，便于直查。
+    - 列与百度 getquotation 的 keys 完全一致（结构化投影），不丢字段、便于直查。
     - volume 单位=股（与百度一致），amount 单位=元；与 stock_daily_kline 的
       volume(股) 口径一致，join 无需换算。
     """
@@ -286,23 +285,25 @@ class StockDailyBaidu(Base):
     date = Column(Date, nullable=False, index=True)
     ktype = Column(String(8), nullable=False, default="1", index=True)  # 1=日线
 
-    # 结构化常用字段（投影自 raw_row）
+    # 结构化字段：与百度 getquotation keys 完全一致（字段命名保持与百度一致）
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)            # 成交量（股）
     amount = Column(Float)            # 成交额（元）
-    amplitude = Column(Float)         # 振幅（%）
-    pct_change = Column(Float)        # 涨跌幅（%）
-    turnover_rate = Column(Float)     # 换手率（%）
-    pre_close = Column(Float)         # 昨收
-    ma5 = Column(Float)               # ma5avgprice
-    ma10 = Column(Float)              # ma10avgprice
-    ma20 = Column(Float)              # ma20avgprice
-
-    # 接口返回的原始行（分号分隔多字段，按接口 keys 顺序解析），保证零丢失
-    raw_row = Column(Text)
+    range = Column(Float)             # 百度 keys 标 range（实为涨跌额 change）
+    ratio = Column(Float)             # 涨跌幅（%）
+    turnoverratio = Column(Float)     # 换手率（%）
+    preClose = Column(Float)          # 昨收
+    ma5avgprice = Column(Float)       # MA5 收盘价
+    ma5volume = Column(Float)         # MA5 成交量
+    ma10avgprice = Column(Float)      # MA10 收盘价
+    ma10volume = Column(Float)        # MA10 成交量
+    ma20avgprice = Column(Float)      # MA20 收盘价
+    ma20volume = Column(Float)        # MA20 成交量
+    timestamp = Column(Float)         # 百度原始 unix 时间戳
+    time = Column(String(32))         # 百度时间串（仅日期 YYYY-MM-DD）
 
     data_source = Column(String(50), default="BaiduFetcher")
     fetched_at = Column(DateTime, default=datetime.now)
@@ -1536,6 +1537,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_stock_daily_columns()
+            self._ensure_baidu_columns()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1687,6 +1689,36 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     index_columns.append(column_name)
                 unique_indexes.append(index_columns)
             return unique_indexes
+
+    def _ensure_baidu_columns(self) -> None:
+        """若 stock_daily_baidu 仍是旧 schema（含 amplitude/pct_change/pre_close/ma*/raw_row 等旧列），
+        直接 DROP 并按当前 ORM 重建（旧数据丢弃，按新 schema 来）。
+
+        仅当检测到旧列名时执行一次；已是新 schema 的表不受影响。
+        """
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns("stock_daily_baidu")
+            }
+        except Exception:
+            # 表不存在：交给 create_all 创建，无需处理
+            return
+        old_markers = {
+            "amplitude", "pct_change", "turnover_rate", "pre_close",
+            "ma5", "ma10", "ma20", "raw_row",
+        }
+        if not (existing & old_markers):
+            return  # 已是新 schema
+        logger.warning(
+            "[baidu] 检测到旧 schema（%s），删除 stock_daily_baidu 并按新 schema 重建",
+            sorted(existing & old_markers),
+        )
+        with self._engine.begin() as conn:
+            conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily_baidu")
+        Base.metadata.create_all(self._engine, tables=[StockDailyBaidu.__table__])
 
     def _ensure_stock_daily_columns(self) -> None:
         """给已存在的 stock_daily 表补齐原始行情扩展列（涨跌额/振幅/换手率）。
@@ -3204,7 +3236,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
     ) -> int:
         """保存百度股市通 K 线到 stock_daily_baidu（code+date+ktype upsert）。
 
-        单表承载所有 baidu 返回值：结构化字段投影 + raw_row 原始行（零丢失）。
+        单表承载所有 baidu 返回值：结构化字段投影（字段与百度 keys 完全一致）。
         SQLite 分支按 chunk upsert 避免绑定参数上限；冲突时覆盖更新。
         """
         if df is None or df.empty:
@@ -3213,8 +3245,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         structured_fields = [
             "open", "high", "low", "close", "volume", "amount",
-            "amplitude", "pct_change", "turnover_rate", "pre_close",
-            "ma5", "ma10", "ma20",
+            "range", "ratio", "turnoverratio", "preClose",
+            "ma5avgprice", "ma5volume", "ma10avgprice", "ma10volume",
+            "ma20avgprice", "ma20volume", "timestamp", "time",
         ]
         now = datetime.now()
         records_by_key: Dict[Tuple[str, date], Dict[str, Any]] = {}
@@ -3227,7 +3260,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "date": row_date,
                 "ktype": row.get("ktype") or ktype,
                 "data_source": data_source,
-                "raw_row": row.get("raw_row"),
                 "created_at": now,
                 "updated_at": now,
             }
@@ -3267,7 +3299,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     stmt = sqlite_insert(StockDailyBaidu).values(chunk)
                     excluded = stmt.excluded
                     update_map = {f: getattr(excluded, f) for f in structured_fields}
-                    update_map["raw_row"] = excluded.raw_row
                     update_map["data_source"] = excluded.data_source
                     update_map["updated_at"] = excluded.updated_at
                     session.execute(
@@ -3298,7 +3329,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     continue
                 for field in structured_fields:
                     setattr(existing, field, record.get(field))
-                existing.raw_row = record["raw_row"]
                 existing.data_source = record["data_source"]
                 existing.updated_at = record["updated_at"]
             return new_count
@@ -3344,14 +3374,18 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     "close": r.close,
                     "volume": r.volume,
                     "amount": r.amount,
-                    "amplitude": r.amplitude,
-                    "pct_change": r.pct_change,
-                    "turnover_rate": r.turnover_rate,
-                    "pre_close": r.pre_close,
-                    "ma5": r.ma5,
-                    "ma10": r.ma10,
-                    "ma20": r.ma20,
-                    "raw_row": r.raw_row,
+                    "range": r.range,
+                    "ratio": r.ratio,
+                    "turnoverratio": r.turnoverratio,
+                    "preClose": r.preClose,
+                    "ma5avgprice": r.ma5avgprice,
+                    "ma5volume": r.ma5volume,
+                    "ma10avgprice": r.ma10avgprice,
+                    "ma10volume": r.ma10volume,
+                    "ma20avgprice": r.ma20avgprice,
+                    "ma20volume": r.ma20volume,
+                    "timestamp": r.timestamp,
+                    "time": r.time,
                     "data_source": r.data_source,
                     "fetched_at": r.fetched_at.isoformat() if r.fetched_at else None,
                 }
