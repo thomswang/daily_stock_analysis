@@ -95,7 +95,7 @@ class BaiduKlineIngestor:
         if reports:
             try:
                 reports_saved = self.db.save_financial_reports(
-                    code, reports
+                    code, reports, source=self.source_name
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("保存 %s 财报失败（K 线不受影响）: %s", code, exc)

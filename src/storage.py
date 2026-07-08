@@ -340,14 +340,15 @@ class StockFinancialReport(Base):
     与日 K（stock_daily_ohlcv）解耦存储：一份财报对应一个披露日，财务数字
     属「季度截面」而非「日频时间序列」，单独成表避免日线表语义混乱。
 
-    仅保留定位字段 + 原始数据，不做任何结构化提取：
+    仅保留定位字段 + 原始数据 + 来源，不做任何结构化提取：
       - code：股票代码
       - report_date：财报披露日（来自 reportData 的 key，如 2021-03-31）
+      - source：数据来源（如 baidu），用于区分同源/异源财报
       - raw_json：该披露日的全部原始 entries（list[dict]，含 data 文案与
         xcxQuery 深链）原样存为 JSON 字符串，"用到时再取"。结构化指标
         （营收/净利润等）由下游按需从 raw_json 解析，便于以后扩展维度。
       - created_at / updated_at：落库/更新时间
-    按 (code, report_date) 唯一 upsert。
+    按 (code, report_date, source) 唯一 upsert。
     """
 
     __tablename__ = "stock_financial_report"
@@ -356,21 +357,22 @@ class StockFinancialReport(Base):
     code = Column(String(16), nullable=False, index=True)
     report_date = Column(Date, nullable=False, index=True)
 
+    source = Column(String(50), nullable=False, default="baidu")
     raw_json = Column(Text)        # 原始 reportData[report_date] entries（JSON 字符串）
 
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        UniqueConstraint("code", "report_date",
-                         name="uix_fin_report_code_date"),
+        UniqueConstraint("code", "report_date", "source",
+                         name="uix_fin_report_code_date_src"),
         Index("ix_fin_report_code_date", "code", "report_date"),
     )
 
     def __repr__(self):
         return (
             f"<StockFinancialReport(code={self.code}, date={self.report_date}, "
-            f"has_raw={self.raw_json is not None})>"
+            f"src={self.source}, has_raw={self.raw_json is not None})>"
         )
 
 
@@ -3501,13 +3503,15 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         self,
         code: str,
         reports: List[Dict[str, Any]],
+        *,
+        source: str = "baidu",
     ) -> int:
         """保存个股财报披露原始数据到 stock_financial_report（upsert）。
 
         reports: ``parse_baidu_report_data`` 产出的列表，单条形如
             ``{"report_date": date, "raw": [原始 entries...]}``。
-        仅存定位字段 + raw_json，结构化指标由下游按需解析。
-        唯一键 (code, report_date)，冲突时覆盖 raw_json 与 updated_at。
+        仅存定位字段 + raw_json + source，结构化指标由下游按需解析。
+        唯一键 (code, report_date, source)，冲突时覆盖 raw_json 与 updated_at。
         SQLite 分支按 chunk upsert 避免绑定参数上限。
         """
         if not reports:
@@ -3523,6 +3527,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             rows.append({
                 "code": code,
                 "report_date": rd,
+                "source": source,
                 "raw_json": json.dumps(raw_entries, ensure_ascii=False)
                 if raw_entries is not None else None,
                 "created_at": now,
@@ -3540,7 +3545,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     chunk = rows[i : i + _CHUNK]
                     stmt = sqlite_insert(StockFinancialReport).values(chunk)
                     stmt = stmt.on_conflict_do_update(
-                        index_elements=["code", "report_date"],
+                        index_elements=["code", "report_date", "source"],
                         set_={**{f: stmt.excluded[f] for f in fin_fields},
                               "updated_at": stmt.excluded.updated_at},
                     )
@@ -3549,7 +3554,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 return len(rows)
 
             existing_rows = {
-                (row.code, row.report_date): row
+                (row.code, row.report_date, row.source): row
                 for row in session.execute(
                     select(StockFinancialReport).where(
                         StockFinancialReport.code == code
@@ -3557,7 +3562,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 ).scalars().all()
             }
             for record in rows:
-                key = (record["code"], record["report_date"])
+                key = (record["code"], record["report_date"], record["source"])
                 existing = existing_rows.get(key)
                 if existing is None:
                     session.add(StockFinancialReport(**record))
@@ -3584,10 +3589,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         *,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
+        source: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """查询个股财报披露原始数据（按 code + 日期区间，升序）。"""
         with self.get_session() as session:
             stmt = select(StockFinancialReport).where(StockFinancialReport.code == code)
+            if source:
+                stmt = stmt.where(StockFinancialReport.source == source)
             if start_date is not None:
                 stmt = stmt.where(StockFinancialReport.report_date >= start_date)
             if end_date is not None:
@@ -3598,6 +3606,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 {
                     "code": r.code,
                     "report_date": r.report_date.isoformat() if r.report_date else None,
+                    "source": r.source,
                     "raw_json": r.raw_json,
                 }
                 for r in rows
