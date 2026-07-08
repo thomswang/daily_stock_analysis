@@ -185,9 +185,10 @@ def _filter_by_range(
     start_time: str,
     end_time: Optional[str] = None,
 ) -> pd.DataFrame:
-    """vapi 默认返回整段历史，按 [start_time, end_time] 在本地裁剪。
+    """百度返回后按 [start_time, end_time] 在本地裁剪落库窗口。
 
-    即使接口忽略 start/end 区间参数（实测未确认），本地过滤也能保证只落库目标窗口，
+    百度接口实测**忽略** start/end 区间参数（full=True 回传整段历史、
+    full=False 只回最近约 2000 行），故区间裁剪完全依赖本地过滤：
     既兼容「只要历史某段」也兼容「全量回填到当前」。
     """
     if df is None or df.empty:
@@ -246,8 +247,9 @@ class BaiduFetcher(BaseFetcher):
             "is_kc": "0",
             "ktype": api_ktype,
             "finClientType": "pc",
-            # full=True：带 all=1 返回全量（茅台可回 2001 上市），用于首次/补齐深历史。
-            # full=False：不带 all=1，接口返回最近 2001 行（约 2018 年起）的「尾窗口」，
+            # full=True：带 all=1 返回整段历史（茅台可回 2001 上市），用于首次/补齐深历史。
+            # full=False：不带 all=1，接口只返回最近约 2000 行「尾窗口」
+            #   （老票≈2018 起；新股=上市日起，因其整段不足 2000 行），
             #   用于本地已存有深历史、只需刷新近期数据的场景，显著减少传输量。
             # 注意：百度接口实测忽略 start_time/end_time，区间裁剪完全依赖本地 _filter_by_range。
             "chartType": "kline",
@@ -296,9 +298,10 @@ class BaiduFetcher(BaseFetcher):
         ktype: str = "1",
         full: bool = True,
     ) -> pd.DataFrame:
-        """请求百度 vapi K 线并解析为结构化 DataFrame。
+        """请求百度 vapi K 线并解析为结构化 DataFrame，再按 start/end 本地裁剪。
 
-        full: True 拉全量（all=1，回溯到上市日）；False 仅拉最近 2001 行尾窗口。
+        full: True 拉全量（all=1，回溯到上市日）；False 仅拉最近约 2000 行尾窗口
+        （老票≈2018 起，新股=上市日起）。
         """
         params = self._build_params(code, start_time, end_time, ktype, full=full)
         try:

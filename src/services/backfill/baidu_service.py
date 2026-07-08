@@ -26,6 +26,21 @@ def _default_token_provider():
     return BaiduTokenProvider()
 
 
+def _resolve_need_full(full_mode: str, local_first, effective_start) -> bool:
+    """根据 full_mode 决定百度请求是否带 all=1（全量）。
+
+    - auto：本地无数据或有效起点早于本地 first → 全量；否则尾窗口。
+    - full：永远全量（无视本地覆盖，用于补齐/修复深历史）。
+    - tail：永远尾窗口（仅最近约 2000 行，传输量最小）。
+    """
+    if full_mode == "full":
+        return True
+    if full_mode == "tail":
+        return False
+    # auto
+    return (local_first is None) or (effective_start < local_first)
+
+
 class BaiduBackfillService:
     """百度 K 线整段回填（BaiduFetcher，HTTP 直连 vapi/v1/getquotation）。
 
@@ -83,7 +98,9 @@ class BaiduBackfillService:
         log_every: int = 1,
         stop_check: Optional[Callable[[], bool]] = None,
         ktype: str = "1",
+        full_mode: str = "auto",
     ) -> Dict[str, Any]:
+        logger.info("baidu 回填 full_mode=%s", full_mode)
         try:
             return run_backfill_job(
                 dataset=self.dataset,
@@ -111,7 +128,7 @@ class BaiduBackfillService:
                     "baidu 回填结束：拉取 %d / 跳过 %d / 失败 %d / 空 %d，"
                     "新增 baidu 行 %d，台账：%s"
                 ),
-                process_kwargs={"ktype": ktype},
+                process_kwargs={"ktype": ktype, "full_mode": full_mode},
             )
         finally:
             # 仅在内部创建的 provider 才负责关闭浏览器，避免影响调用方持有的实例
@@ -131,6 +148,7 @@ class BaiduBackfillService:
         min_attempted: Optional[date] = None,
         list_date: Optional[date] = None,
         ktype: str = "1",
+        full_mode: str = "auto",
         **_: Any,
     ) -> Dict[str, Any]:
         from src.services.quote_backfill_planner import resolve_effective_start
@@ -163,13 +181,16 @@ class BaiduBackfillService:
                 "rows": coverage.get("rows", 0),
             }
 
-        # 是否需全量（all=1）：
-        # - 本地尚无数据 → 首次回填，必须全量；
-        # - 请求的 start 早于本地已存 first → 需要补齐更深的历史，全量；
-        # - 否则本地已持有深历史，仅刷新近期尾窗口（不带 all=1，约 1/3 传输量）。
-        # 百度接口忽略 start/end，故能否增量只取决于本地覆盖，而非接口参数。
+        # 全量 / 尾窗口策略（控制百度请求是否带 all=1）：
+        # - full_mode="auto"（默认）：本地无数据，或有效起点早于本地已存 first → 全量；
+        #   否则本地已持有深历史，仅刷新近期尾窗口（不带 all=1，传输量显著减少）。
+        # - full_mode="full"：强制全量（all=1），无视本地覆盖（用于补齐/修复深历史）。
+        # - full_mode="tail"：强制尾窗口（不带 all=1），仅取百度最近约 2000 行
+        #   （老票≈2018 起；新股=上市日起），传输量最小。
+        # 注意：此处的 full 与 --mode 的 "full" 是两回事——--mode 控制「分段策略」，
+        # 本开关控制「单段是否带 all=1」。百度接口忽略 start/end，区间靠本地裁剪。
         local_first = coverage.get("first")
-        need_full = (local_first is None) or (start_d < local_first)
+        need_full = _resolve_need_full(full_mode, local_first, effective_start)
 
         total_rows = 0
         got_any = False
@@ -197,6 +218,17 @@ class BaiduBackfillService:
             return {"action": "empty"}
 
         cov2 = self.repo.get_ohlcv_coverage(code, ktype=ktype, adj_type="qfq")
+        first2 = cov2.get("first")
+        if (
+            full_mode == "tail"
+            and effective_start is not None
+            and first2 is not None
+            and first2 > effective_start
+        ):
+            logger.warning(
+                "%s 尾窗口仅覆盖到 %s（早于该日的请求起点 %s 百度不返回，需 full 模式才能补齐）",
+                code, first2, effective_start,
+            )
         return {
             "action": "fetched",
             "added": total_rows,

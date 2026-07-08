@@ -73,9 +73,10 @@ class BaiduKlineIngestor:
         overwrite: bool = True,
         full: bool = True,
     ) -> KlinePersistResult:
-        """拉取百度 K 线整段并 upsert 到通用表 stock_daily_ohlcv（adj_type=qfq）。
+        """拉取百度 K 线并 upsert 到通用表 stock_daily_ohlcv（adj_type=qfq）。
 
-        full: True 拉全量（all=1）；False 仅拉最近尾窗口，用于已存有深历史的增量刷新。
+        full: True 拉全量（all=1，回溯到上市日）；False 仅拉最近约 2000 行尾窗口
+        （老票≈2018 起，新股=上市日起），用于已存有深历史、只需刷新近期数据的场景。
         """
         ktype = ktype or self._ktype
         df = self.fetcher.fetch_kline_df(

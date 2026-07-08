@@ -196,6 +196,7 @@ def run_baidu(args: argparse.Namespace) -> dict:
         limit=args.limit,
         progress_path=args.progress,
         ktype=args.ktype,
+        full_mode="tail" if args.no_full else "auto",
     )
 
 
@@ -307,7 +308,11 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
+            "  # 全量（默认 auto：首次/需补齐深历史自动全量，否则尾窗口）\n"
             "  python backfill.py baidu --all --mode range --start 2015-01-01 --end 2026-07-03 \\\n"
+            "    --progress data/baidu_progress.json --retry 3 --ktype 1\n"
+            "  # 尾窗口（--no-full：仅最近约 2000 行，老票≈2018 起，传输量最小）\n"
+            "  python backfill.py baidu --all --no-full --end 2026-07-03 \\\n"
             "    --progress data/baidu_progress.json --retry 3 --ktype 1\n"
         ),
     )
@@ -326,6 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
     baidu.add_argument(
         "--ktype", type=str, default="1", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"],
         help="K 线类型（默认 1=日线；单表内以 ktype 区分，不分表）",
+    )
+    baidu.add_argument(
+        "--no-full", action="store_true",
+        help="尾窗口模式：百度不带 all=1，仅拉最近约 2000 行（老票≈2018 起，新股=上市日起）。"
+             "默认 auto（本地无数据或需补齐深历史时自动全量）。与 --mode 无关。",
     )
 
     westock_ohlcv = sub.add_parser(
