@@ -8,6 +8,9 @@ from .baidu_service import BaiduBackfillService
 from .kline_service import DEFAULT_PROGRESS_PATH as KLINE_DEFAULT_PROGRESS_PATH
 from .kline_service import DEFAULT_START_DATE as KLINE_DEFAULT_START_DATE
 from .kline_service import KlineBackfillService
+from .westock_ohlcv_service import DEFAULT_PROGRESS_PATH as WESTOCK_OHLCV_DEFAULT_PROGRESS_PATH
+from .westock_ohlcv_service import DEFAULT_START_DATE as WESTOCK_OHLCV_DEFAULT_START_DATE
+from .westock_ohlcv_service import WestockOhlcvBackfillService
 from .ledger import ProgressLedger
 from .quote_service import DEFAULT_PROGRESS_PATH as QUOTE_DEFAULT_PROGRESS_PATH
 from .quote_service import DEFAULT_START_DATE as QUOTE_DEFAULT_START_DATE
@@ -28,6 +31,9 @@ __all__ = [
     "QuoteBackfillService",
     "QUOTE_DEFAULT_PROGRESS_PATH",
     "QUOTE_DEFAULT_START_DATE",
+    "WestockOhlcvBackfillService",
+    "WESTOCK_OHLCV_DEFAULT_PROGRESS_PATH",
+    "WESTOCK_OHLCV_DEFAULT_START_DATE",
     "is_no_data_error",
     "parse_date",
     "plan_segments",

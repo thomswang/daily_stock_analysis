@@ -264,61 +264,72 @@ class StockDailyQuote(Base):
             )
 
 
-class StockDailyBaidu(Base):
+class StockDailyOhlcv(Base):
     """
-    百度股市通 K 线原始落地表（单表，不复权/前复权由 ktype 区分，不分表）。
+    股票日线 OHLCV 时间序列通用层（源无关，按 (code,date,ktype,adj_type,data_source) 唯一）。
 
-    数据源：百度股市通 getstockquotation（HTTP）。该接口 K 线自带换手率
-    turnoverratio、振幅、涨跌幅、MA 等字段，且能稳定回溯多年（已验证可到 2018）。
+    该表承接**所有** K 线类数据源的 OHLCV 落地，命名与具体数据源解耦：
+    - 百度股市通 getquotation（HTTP）：实测返回**前复权(qfq)**，单表自带换手率/
+      涨跌幅/MA 等，可稳定回溯多年。
+    - westock kline（qfq 口径，与百度同口径）：可用于每日增量续写，与百度历史段
+      在 (code,date,adj_type='qfq') 上无缝拼接，无复权断崖。
+    - 其它 K 线源（如腾讯）亦可经此表接入（adj_type 区分 qfq/bfq）。
+
+    复权口径约定：
+    - adj_type='qfq'：前复权（历史价按累计分红因子下调，最近交易日与不复权价一致）。
+    - adj_type='bfq'：不复权（真实成交价）。
+    不同 adj_type 不可混写同一 (code,date)，否则价格序列出现断崖——续写百度段时
+    必须用 westock kline(qfq) 而非 quote --date（后者为不复权截面）。
 
     设计取舍：
-    - 单表承载所有 baidu 返回值，按 (code, date, ktype) 唯一；不再按年份/代码分表。
-    - 列与百度 getquotation 的 keys 完全一致（结构化投影），不丢字段、便于直查。
-    - volume 单位=股（与百度一致），amount 单位=元；与 stock_daily_kline 的
-      volume(股) 口径一致，join 无需换算。
+    - 单表按 (code, date, ktype, adj_type, data_source) 唯一；不再按年份/代码分表。
+    - 只落库训练有价值的列（open/high/low/close/volume/amount/ratio/
+      turnoverratio/preClose/time）；MA(5/10/20) 价格与成交量、涨跌额、unix 时间戳
+      均可由这些列在特征工程阶段推导，不落库，保持训练集精简。
+    - volume 单位=股，amount 单位=元；与 stock_daily_kline 的 volume(股) 口径一致，
+      join 无需换算。westock quote --date 的 volume(手) 入此表前需 ×100 转成股。
     """
 
-    __tablename__ = "stock_daily_baidu"
+    __tablename__ = "stock_daily_ohlcv"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     code = Column(String(16), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
     ktype = Column(String(8), nullable=False, default="1", index=True)  # 1=日线
+    adj_type = Column(String(8), nullable=False, default="qfq", index=True)  # qfq/bfq
 
-    # 结构化字段：与百度 getquotation keys 完全一致（字段命名保持与百度一致）
+    # 结构化字段：仅保留训练有价值的列（详见 _BAIDU_FIELD_INDEX）。
+    # 剔除项：MA(5/10/20) 价格/成交量（可由 close/volume 滚动重算）、
+    # timestamp（与 time 重复且原始 unix 值会引发时间泄漏）、range（=close-preClose 可推导）。
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)
     close = Column(Float)
     volume = Column(Float)            # 成交量（股）
     amount = Column(Float)            # 成交额（元）
-    range = Column(Float)             # 百度 keys 标 range（实为涨跌额 change）
     ratio = Column(Float)             # 涨跌幅（%）
     turnoverratio = Column(Float)     # 换手率（%）
     preClose = Column(Float)          # 昨收
-    ma5avgprice = Column(Float)       # MA5 收盘价
-    ma5volume = Column(Float)         # MA5 成交量
-    ma10avgprice = Column(Float)      # MA10 收盘价
-    ma10volume = Column(Float)        # MA10 成交量
-    ma20avgprice = Column(Float)      # MA20 收盘价
-    ma20volume = Column(Float)        # MA20 成交量
-    timestamp = Column(Float)         # 百度原始 unix 时间戳
-    time = Column(String(32))         # 百度时间串（仅日期 YYYY-MM-DD）
+    time = Column(String(32))         # 日期（YYYY-MM-DD），时间索引
 
-    data_source = Column(String(50), default="BaiduFetcher")
+    data_source = Column(String(50), nullable=False, default="BaiduFetcher")
     fetched_at = Column(DateTime, default=datetime.now)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
-        UniqueConstraint("code", "date", "ktype", name="uix_baidu_code_date_ktype"),
-        Index("ix_baidu_code_date_ktype", "code", "date", "ktype"),
+        UniqueConstraint(
+            "code", "date", "ktype", "adj_type", "data_source",
+            name="uix_ohlcv_code_date_ktype_adj_src",
+        ),
+        Index("ix_ohlcv_code_date", "code", "date"),
+        Index("ix_ohlcv_code_date_adj", "code", "date", "adj_type"),
     )
 
     def __repr__(self):
         return (
-            f"<StockDailyBaidu(code={self.code}, date={self.date}, "
-            f"ktype={self.ktype}, close={self.close})>"
+            f"<StockDailyOhlcv(code={self.code}, date={self.date}, "
+            f"ktype={self.ktype}, adj={self.adj_type}, close={self.close})>"
         )
 
 
@@ -1537,7 +1548,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_stock_daily_columns()
-            self._ensure_baidu_columns()
+            self._ensure_ohlcv_columns()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1690,35 +1701,45 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 unique_indexes.append(index_columns)
             return unique_indexes
 
-    def _ensure_baidu_columns(self) -> None:
-        """若 stock_daily_baidu 仍是旧 schema（含 amplitude/pct_change/pre_close/ma*/raw_row 等旧列），
-        直接 DROP 并按当前 ORM 重建（旧数据丢弃，按新 schema 来）。
+    def _ensure_ohlcv_columns(self) -> None:
+        """确保 stock_daily_ohlcv 表存在且 schema 与 ORM 一致。
 
-        仅当检测到旧列名时执行一次；已是新 schema 的表不受影响。
+        用「ORM 期望列集合」与「库内实际列集合」做差集判断，比硬编码旧列名更通用——
+        后续再增删列也会自动触发重建（旧数据丢弃，按新 schema 来）。
+
+        兼容性清理：若库内仍存在旧名 ``stock_daily_baidu`` 孤儿表（历史上 K 线仅由
+        百度落库时的表名），在此一次性 DROP，避免与通用表并存造成歧义。该动作仅删除
+        旧表，不影响 stock_daily_kline / stock_daily_quote 等其它表。
         """
         if not self._is_sqlite_engine:
             return
+        # 一次性清理旧表名孤儿（用户侧已确认旧表无需迁移、将删表重拉）
+        try:
+            with self._engine.begin() as conn:
+                conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily_baidu")
+        except Exception:  # noqa: BLE001
+            pass
         try:
             existing = {
                 column["name"]
-                for column in inspect(self._engine).get_columns("stock_daily_baidu")
+                for column in inspect(self._engine).get_columns("stock_daily_ohlcv")
             }
         except Exception:
             # 表不存在：交给 create_all 创建，无需处理
             return
-        old_markers = {
-            "amplitude", "pct_change", "turnover_rate", "pre_close",
-            "ma5", "ma10", "ma20", "raw_row",
-        }
-        if not (existing & old_markers):
-            return  # 已是新 schema
+        expected = {c.name for c in StockDailyOhlcv.__table__.columns}
+        if existing == expected:
+            return  # schema 已一致
+        stale = sorted(existing - expected)
+        missing = sorted(expected - existing)
         logger.warning(
-            "[baidu] 检测到旧 schema（%s），删除 stock_daily_baidu 并按新 schema 重建",
-            sorted(existing & old_markers),
+            "[ohlcv] 检测到 schema 不一致（多余列=%s，缺失列=%s），"
+            "删除 stock_daily_ohlcv 并按新 schema 重建",
+            stale, missing,
         )
         with self._engine.begin() as conn:
-            conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily_baidu")
-        Base.metadata.create_all(self._engine, tables=[StockDailyBaidu.__table__])
+            conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily_ohlcv")
+        Base.metadata.create_all(self._engine, tables=[StockDailyOhlcv.__table__])
 
     def _ensure_stock_daily_columns(self) -> None:
         """给已存在的 stock_daily 表补齐原始行情扩展列（涨跌额/振幅/换手率）。
@@ -3226,28 +3247,31 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             logger.error("保存 %s kline 失败: %s", code, exc)
             raise
 
-    def save_baidu_kline(
+    def save_ohlcv_kline(
         self,
         df: pd.DataFrame,
         code: str,
         *,
         data_source: str = "BaiduFetcher",
         ktype: str = "1",
+        adj_type: str = "qfq",
     ) -> int:
-        """保存百度股市通 K 线到 stock_daily_baidu（code+date+ktype upsert）。
+        """保存日线 OHLCV 到通用表 stock_daily_ohlcv（源无关，upsert）。
 
-        单表承载所有 baidu 返回值：结构化字段投影（字段与百度 keys 完全一致）。
-        SQLite 分支按 chunk upsert 避免绑定参数上限；冲突时覆盖更新。
+        承接百度 / westock kline / 其它 K 线源。唯一键 (code,date,ktype,adj_type,
+        data_source)；同键冲突时覆盖（upsert）。structured_fields 投影与源 key 一致。
+
+        adj_type 必须与实际复权口径一致（百度/westock kline 均为 'qfq'）；若源为
+        不复权截面（如 westock quote --date），请勿直接写入本时间序列表。
+        SQLite 分支按 chunk upsert 避免绑定参数上限。
         """
         if df is None or df.empty:
-            logger.warning("保存 baidu kline 为空，跳过 %s", code)
+            logger.warning("保存 ohlcv kline 为空，跳过 %s", code)
             return 0
 
         structured_fields = [
             "open", "high", "low", "close", "volume", "amount",
-            "range", "ratio", "turnoverratio", "preClose",
-            "ma5avgprice", "ma5volume", "ma10avgprice", "ma10volume",
-            "ma20avgprice", "ma20volume", "timestamp", "time",
+            "ratio", "turnoverratio", "preClose", "time",
         ]
         now = datetime.now()
         records_by_key: Dict[Tuple[str, date], Dict[str, Any]] = {}
@@ -3259,6 +3283,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 "code": code,
                 "date": row_date,
                 "ktype": row.get("ktype") or ktype,
+                "adj_type": row.get("adj_type") or adj_type,
                 "data_source": data_source,
                 "created_at": now,
                 "updated_at": now,
@@ -3283,108 +3308,120 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                         continue
                     existing_keys.update(
                         session.execute(
-                            select(StockDailyBaidu.code, StockDailyBaidu.date).where(
+                            select(
+                                StockDailyOhlcv.code, StockDailyOhlcv.date,
+                                StockDailyOhlcv.adj_type, StockDailyOhlcv.data_source,
+                            ).where(
                                 and_(
-                                    StockDailyBaidu.code == code,
-                                    StockDailyBaidu.date.in_(chunk_dates),
+                                    StockDailyOhlcv.code == code,
+                                    StockDailyOhlcv.date.in_(chunk_dates),
                                 )
                             )
                         ).all()
                     )
                 new_count = sum(
-                    1 for p in rows if (p["code"], p["date"]) not in existing_keys
+                    1 for p in rows
+                    if (p["code"], p["date"], p["adj_type"], p["data_source"])
+                    not in existing_keys
                 )
                 for i in range(0, len(rows), _CHUNK):
                     chunk = rows[i : i + _CHUNK]
-                    stmt = sqlite_insert(StockDailyBaidu).values(chunk)
+                    stmt = sqlite_insert(StockDailyOhlcv).values(chunk)
                     excluded = stmt.excluded
                     update_map = {f: getattr(excluded, f) for f in structured_fields}
+                    update_map["adj_type"] = excluded.adj_type
                     update_map["data_source"] = excluded.data_source
                     update_map["updated_at"] = excluded.updated_at
                     session.execute(
                         stmt.on_conflict_do_update(
-                            index_elements=["code", "date", "ktype"],
+                            index_elements=[
+                                "code", "date", "ktype", "adj_type", "data_source",
+                            ],
                             set_=update_map,
                         )
                     )
                 return new_count
 
             existing_rows = {
-                (row.code, row.date): row
+                (row.code, row.date, row.adj_type, row.data_source): row
                 for row in session.execute(
-                    select(StockDailyBaidu).where(
+                    select(StockDailyOhlcv).where(
                         and_(
-                            StockDailyBaidu.code == code,
-                            StockDailyBaidu.date.in_(batch_dates),
+                            StockDailyOhlcv.code == code,
+                            StockDailyOhlcv.date.in_(batch_dates),
                         )
                     )
                 ).scalars().all()
             }
             new_count = 0
             for record in rows:
-                existing = existing_rows.get((record["code"], record["date"]))
+                key = (
+                    record["code"], record["date"],
+                    record["adj_type"], record["data_source"],
+                )
+                existing = existing_rows.get(key)
                 if existing is None:
-                    session.add(StockDailyBaidu(**record))
+                    session.add(StockDailyOhlcv(**record))
                     new_count += 1
                     continue
                 for field in structured_fields:
                     setattr(existing, field, record.get(field))
+                existing.adj_type = record["adj_type"]
                 existing.data_source = record["data_source"]
                 existing.updated_at = record["updated_at"]
             return new_count
 
         try:
             saved = self._run_write_transaction(
-                f"save_baidu_kline[{code}]",
+                f"save_ohlcv_kline[{code}]",
                 _write,
             )
-            logger.info("保存 %s baidu kline(%s) %d 条", code, ktype, saved)
+            logger.info(
+                "保存 %s ohlcv kline(ktype=%s, adj=%s, src=%s) %d 条",
+                code, ktype, adj_type, data_source, saved,
+            )
             return saved
         except Exception as exc:
-            logger.error("保存 %s baidu kline 失败: %s", code, exc)
+            logger.error("保存 %s ohlcv kline 失败: %s", code, exc)
             raise
 
-    def get_baidu_kline(
+    def get_ohlcv_kline(
         self,
         code: str,
         *,
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         ktype: str = "1",
+        adj_type: str = "qfq",
     ) -> List[Dict[str, Any]]:
-        """查询百度股市通 K 线（按 code + 日期区间，升序）。"""
+        """查询通用日线 OHLCV（按 code + 日期区间，升序）。"""
         with self.get_session() as session:
-            stmt = select(StockDailyBaidu).where(StockDailyBaidu.code == code)
+            stmt = select(StockDailyOhlcv).where(StockDailyOhlcv.code == code)
             if ktype:
-                stmt = stmt.where(StockDailyBaidu.ktype == ktype)
+                stmt = stmt.where(StockDailyOhlcv.ktype == ktype)
+            if adj_type:
+                stmt = stmt.where(StockDailyOhlcv.adj_type == adj_type)
             if start_date is not None:
-                stmt = stmt.where(StockDailyBaidu.date >= start_date)
+                stmt = stmt.where(StockDailyOhlcv.date >= start_date)
             if end_date is not None:
-                stmt = stmt.where(StockDailyBaidu.date <= end_date)
-            stmt = stmt.order_by(StockDailyBaidu.date)
+                stmt = stmt.where(StockDailyOhlcv.date <= end_date)
+            stmt = stmt.order_by(StockDailyOhlcv.date)
             rows = session.execute(stmt).scalars().all()
             return [
                 {
                     "code": r.code,
                     "date": r.date.isoformat() if r.date else None,
                     "ktype": r.ktype,
+                    "adj_type": r.adj_type,
                     "open": r.open,
                     "high": r.high,
                     "low": r.low,
                     "close": r.close,
                     "volume": r.volume,
                     "amount": r.amount,
-                    "range": r.range,
                     "ratio": r.ratio,
                     "turnoverratio": r.turnoverratio,
                     "preClose": r.preClose,
-                    "ma5avgprice": r.ma5avgprice,
-                    "ma5volume": r.ma5volume,
-                    "ma10avgprice": r.ma10avgprice,
-                    "ma10volume": r.ma10volume,
-                    "ma20avgprice": r.ma20avgprice,
-                    "ma20volume": r.ma20volume,
-                    "timestamp": r.timestamp,
                     "time": r.time,
                     "data_source": r.data_source,
                     "fetched_at": r.fetched_at.isoformat() if r.fetched_at else None,

@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""百度股市通 K 线 → 通用表 stock_daily_ohlcv（adj_type=qfq）回填。"""
+"""westock kline(qfq) → 通用表 stock_daily_ohlcv 每日增量回填。
+
+与百度历史段写入同一张 stock_daily_ohlcv（adj_type='qfq'），按 data_source='Westock'
+独立记录覆盖度，与百度段互不干扰；两源 qfq 价在 (code, date) 上无缝拼接。
+
+注意：westock quote --date（不复权截面）不写本时间序列表——其价格是不复权口径，
+若直接写入会与百度 qfq 出现 7~8% 断崖。本服务只走 westock kline(qfq)。
+"""
 
 from __future__ import annotations
 
@@ -16,55 +23,29 @@ from .segment_planner import iso as _iso
 logger = logging.getLogger(__name__)
 
 DEFAULT_START_DATE = "2010-01-01"
-DEFAULT_PROGRESS_PATH = os.path.join("data", "baidu_backfill_progress.json")
+DEFAULT_PROGRESS_PATH = os.path.join("data", "westock_ohlcv_backfill_progress.json")
 
 
-def _default_token_provider():
-    """延迟导入并创建默认的百度 acs-token 自动获取器（浏览器懒启动）。"""
-    from data_provider.baidu_token_provider import BaiduTokenProvider
+class WestockOhlcvBackfillService:
+    """westock kline(qfq) 每日增量回填（WestockOhlcvIngestor → stock_daily_ohlcv）。"""
 
-    return BaiduTokenProvider()
+    dataset = "westock_ohlcv"
 
-
-class BaiduBackfillService:
-    """百度 K 线整段回填（BaiduFetcher，HTTP 直连 vapi/v1/getquotation）。
-
-    默认自动创建 :class:`BaiduTokenProvider`（懒启动浏览器，按需刷新 acs-token），
-    无需手动粘贴 token。也可通过 ``token_provider`` 传入自定义实例。
-    """
-
-    dataset = "baidu"
-
-    def __init__(self, db_manager=None, token_provider=None):
+    def __init__(self, db_manager=None):
         from src.repositories.stock_repo import StockRepository
 
         self.repo = StockRepository(db_manager)
-        # 未显式传入则默认创建一个（浏览器懒启动，仅在首次请求时拉起）
-        self._token_provider = token_provider or _default_token_provider()
-        self._owns_provider = token_provider is None
         self._ingest = None
 
     @property
     def ingest(self):
         if self._ingest is None:
-            from src.ingest.baidu_kline import BaiduKlineIngestor
+            from src.ingest.westock_ohlcv import WestockOhlcvIngestor
 
-            self._ingest = BaiduKlineIngestor(
-                db_manager=self.repo.db, token_provider=self._token_provider
+            self._ingest = WestockOhlcvIngestor(
+                db_manager=self.repo.db, adj="qfq"
             )
         return self._ingest
-
-    def close(self) -> None:
-        """释放 token_provider 持有的浏览器资源（仅当由本服务内部创建时）。
-
-        不清空 ``_token_provider`` 引用：provider 对象在下次 ``get_token()`` 时会
-        按需重新拉起浏览器，从而支持服务被多次 ``run()`` 复用。
-        """
-        if self._owns_provider and self._token_provider is not None:
-            try:
-                self._token_provider.close()
-            except Exception:  # noqa: BLE001
-                pass
 
     def run(
         self,
@@ -72,7 +53,7 @@ class BaiduBackfillService:
         *,
         start_date: str = DEFAULT_START_DATE,
         end_date: Optional[str] = None,
-        mode: str = "full",
+        mode: str = "incremental",
         sleep: float = 0.0,
         retry: int = 1,
         fresh_days: int = 4,
@@ -82,12 +63,11 @@ class BaiduBackfillService:
         progress_path: str = DEFAULT_PROGRESS_PATH,
         log_every: int = 1,
         stop_check: Optional[Callable[[], bool]] = None,
-        ktype: str = "1",
     ) -> Dict[str, Any]:
         try:
             return run_backfill_job(
                 dataset=self.dataset,
-                rows_key="baidu_rows",
+                rows_key="ohlcv_rows",
                 codes=codes,
                 process_code=self._process_code,
                 progress_path=progress_path,
@@ -102,20 +82,19 @@ class BaiduBackfillService:
                 limit=limit,
                 log_every=log_every,
                 stop_check=stop_check,
-                meta_extra={"ktype": ktype},
+                meta_extra={"adj_type": "qfq", "data_source": "Westock"},
                 start_log=(
-                    "开始 baidu kline 回填：%d 只，区间 %s ~ %s，模式=%s，"
+                    "开始 westock ohlcv 回填：%d 只，区间 %s ~ %s，模式=%s，"
                     "限流=%.2fs，force=%s"
                 ),
                 finish_log=(
-                    "baidu 回填结束：拉取 %d / 跳过 %d / 失败 %d / 空 %d，"
-                    "新增 baidu 行 %d，台账：%s"
+                    "westock ohlcv 回填结束：拉取 %d / 跳过 %d / 失败 %d / 空 %d，"
+                    "新增 ohlcv 行 %d，台账：%s"
                 ),
-                process_kwargs={"ktype": ktype},
+                process_kwargs={"data_source": "Westock"},
             )
         finally:
-            # 仅在内部创建的 provider 才负责关闭浏览器，避免影响调用方持有的实例
-            self.close()
+            pass
 
     def _process_code(
         self,
@@ -130,19 +109,21 @@ class BaiduBackfillService:
         sleep: float,
         min_attempted: Optional[date] = None,
         list_date: Optional[date] = None,
-        ktype: str = "1",
+        data_source: str = "Westock",
         **_: Any,
     ) -> Dict[str, Any]:
         from src.services.quote_backfill_planner import resolve_effective_start
 
-        coverage = self.repo.get_ohlcv_coverage(code, ktype=ktype, adj_type="qfq")
+        coverage = self.repo.get_ohlcv_coverage(
+            code, adj_type="qfq", data_source=data_source
+        )
         effective_start, start_reason = resolve_effective_start(
             code, start_d, end_d, list_date=list_date, force=force,
         )
         if effective_start is None:
             return {
                 "action": "empty",
-                "error": "区间内无 baidu 数据",
+                "error": "区间内无 westock kline 数据",
                 "start_reason": start_reason,
             }
 
@@ -163,26 +144,21 @@ class BaiduBackfillService:
                 "rows": coverage.get("rows", 0),
             }
 
-        # 是否需全量（all=1）：
-        # - 本地尚无数据 → 首次回填，必须全量；
-        # - 请求的 start 早于本地已存 first → 需要补齐更深的历史，全量；
-        # - 否则本地已持有深历史，仅刷新近期尾窗口（不带 all=1，约 1/3 传输量）。
-        # 百度接口忽略 start/end，故能否增量只取决于本地覆盖，而非接口参数。
-        local_first = coverage.get("first")
-        need_full = (local_first is None) or (start_d < local_first)
-
+        # westock kline 单次即可拉整段（与 baidu 不同，无需 all=1 参数），
+        # 故 local_first 仅用于决定是否整段还是增量尾窗口（此处统一全量拉取，
+        # 由 upsert 覆盖；westock 限额宽松，整段拉取更简单可靠）。
         total_rows = 0
         got_any = False
         for seg_start, seg_end in segments:
             result, err = self._ingest_with_retry(
-                code, seg_start, seg_end, retry=retry, ktype=ktype, full=need_full
+                code, seg_start, seg_end, retry=retry
             )
             if sleep > 0:
                 time.sleep(sleep)
             if err is not None:
                 if got_any:
                     logger.warning(
-                        "%s baidu 分段 %s~%s 失败：%s（已保留其余段）",
+                        "%s westock ohlcv 分段 %s~%s 失败：%s（已保留其余段）",
                         code, seg_start, seg_end, err,
                     )
                     continue
@@ -196,15 +172,17 @@ class BaiduBackfillService:
         if not got_any:
             return {"action": "empty"}
 
-        cov2 = self.repo.get_ohlcv_coverage(code, ktype=ktype, adj_type="qfq")
+        cov2 = self.repo.get_ohlcv_coverage(
+            code, adj_type="qfq", data_source=data_source
+        )
         return {
             "action": "fetched",
             "added": total_rows,
-            "baidu_rows": total_rows,
+            "ohlcv_rows": total_rows,
             "first": cov2.get("first"),
             "last": cov2.get("last"),
             "rows": cov2.get("rows"),
-            "source": "BaiduFetcher",
+            "source": "Westock",
             "start_reason": start_reason,
             "effective_start": _iso(effective_start),
         }
@@ -215,28 +193,15 @@ class BaiduBackfillService:
         seg_start: date,
         seg_end: date,
         *,
-        retry: int,
-        ktype: str = "1",
-        full: bool = True,
+        retry: int = 1,
     ):
-        """返回 (result, err)。err 为 None 表示成功；err 命中 no_data 才判 empty。
-
-        百度落库是 upsert（按 code+date+ktype+adj_type+data_source 冲突则更新），
-        ``save_ohlcv_kline``
-        返回的是「新增」行数——重复回填时新增为 0 但数据已正确覆盖写入，属正常成功。
-        因此判定成功只看 ``rows_fetched > 0``（已取到数据且已 upsert 落库）；
-        仅 ``rows_fetched == 0`` 才代表接口确实无数据。
-
-        full: 是否拉全量（all=1）。已存有深历史时由调用方置 False，仅刷新尾窗口。
-        """
+        """返回 (result, err)。err 为 None 表示成功；err 命中 no_data 才判 empty。"""
         last_err = None
         for attempt in range(retry + 1):
             try:
-                result = self.ingest.backfill(
-                    code, start=seg_start, end=seg_end, ktype=ktype, full=full
-                )
+                result = self.ingest.backfill(code, start=seg_start, end=seg_end)
                 if result.rows_fetched == 0:
-                    last_err = "baidu 返回空"
+                    last_err = "westock kline 返回空"
                 else:
                     return result, None
             except Exception as exc:  # noqa: BLE001

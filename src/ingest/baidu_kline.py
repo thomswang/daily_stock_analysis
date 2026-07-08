@@ -71,18 +71,22 @@ class BaiduKlineIngestor:
         end: date,
         ktype: Optional[str] = None,
         overwrite: bool = True,
+        full: bool = True,
     ) -> KlinePersistResult:
-        """拉取百度 K 线整段并 upsert 到 stock_daily_baidu。"""
+        """拉取百度 K 线整段并 upsert 到通用表 stock_daily_ohlcv（adj_type=qfq）。
+
+        full: True 拉全量（all=1）；False 仅拉最近尾窗口，用于已存有深历史的增量刷新。
+        """
         ktype = ktype or self._ktype
         df = self.fetcher.fetch_kline_df(
-            code, start.isoformat(), end.isoformat(), ktype=ktype
+            code, start.isoformat(), end.isoformat(), ktype=ktype, full=full
         )
         if df is None or df.empty:
             return KlinePersistResult(
                 rows_saved=0, source=self.source_name, rows_fetched=0
             )
-        saved = self.db.save_baidu_kline(
-            df, code, data_source=self.source_name, ktype=ktype
+        saved = self.db.save_ohlcv_kline(
+            df, code, data_source=self.source_name, ktype=ktype, adj_type="qfq"
         )
         return KlinePersistResult(
             rows_saved=saved, source=self.source_name, rows_fetched=len(df)

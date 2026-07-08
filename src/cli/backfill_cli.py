@@ -116,6 +116,8 @@ def print_progress_status(progress_path: str, *, dataset: str) -> None:
         title = "quote 回填进度台账"
     elif dataset == "baidu":
         title = "baidu 回填进度台账"
+    elif dataset == "westock-ohlcv":
+        title = "westock-ohlcv 回填进度台账"
     else:
         title = "kline 回填进度台账"
     print(f"\n===== {title} =====")
@@ -197,6 +199,26 @@ def run_baidu(args: argparse.Namespace) -> dict:
     )
 
 
+def run_westock_ohlcv(args: argparse.Namespace) -> dict:
+    from src.services.backfill import WestockOhlcvBackfillService
+
+    codes = resolve_codes(args)
+    logger.info("准备 westock ohlcv 回填：%d 只股票", len(codes))
+    return WestockOhlcvBackfillService().run(
+        codes,
+        start_date=args.start,
+        end_date=args.end,
+        mode=args.mode,
+        sleep=args.sleep,
+        retry=args.retry,
+        fresh_days=args.fresh_days,
+        force=args.force,
+        retry_failed=args.retry_failed,
+        limit=args.limit,
+        progress_path=args.progress,
+    )
+
+
 def print_summary(stats: dict, *, dataset: str) -> None:
     if dataset == "quote":
         label = "quote"
@@ -204,6 +226,9 @@ def print_summary(stats: dict, *, dataset: str) -> None:
     elif dataset == "baidu":
         label = "baidu"
         rows_key = "baidu_rows"
+    elif dataset == "westock-ohlcv":
+        label = "westock-ohlcv"
+        rows_key = "ohlcv_rows"
     else:
         label = "kline"
         rows_key = "kline_rows"
@@ -278,7 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     baidu = sub.add_parser(
         "baidu",
-        help="百度股市通 K 线 → stock_daily_baidu（含换手率/振幅/MA，单表）",
+        help="百度股市通 K 线 → stock_daily_ohlcv（含换手率/振幅/MA，通用 OHLCV 表）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "示例:\n"
@@ -301,6 +326,30 @@ def build_parser() -> argparse.ArgumentParser:
     baidu.add_argument(
         "--ktype", type=str, default="1", choices=["1", "2", "3", "4", "5", "6", "7", "8", "9"],
         help="K 线类型（默认 1=日线；单表内以 ktype 区分，不分表）",
+    )
+
+    westock_ohlcv = sub.add_parser(
+        "westock-ohlcv",
+        help="westock kline(qfq) → stock_daily_ohlcv（与百度历史段同表拼接；volume 转股）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "示例:\n"
+            "  python backfill.py westock-ohlcv --all --mode incremental "
+            "--start 2026-07-01 --end 2026-07-08 \\\n"
+            "    --progress data/westock_ohlcv_progress.json --retry 2\n"
+        ),
+    )
+    add_code_source_args(westock_ohlcv)
+    add_run_args(
+        westock_ohlcv,
+        defaults=argparse.Namespace(
+            start="2010-01-01",
+            mode="incremental",
+            fresh_days=4,
+            retry=2,
+            sleep=0.0,
+            progress=os.path.join("data", "westock_ohlcv_backfill_progress.json"),
+        ),
     )
 
     return parser
@@ -340,6 +389,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.dataset == "baidu":
         runner = run_baidu
+    elif args.dataset == "westock-ohlcv":
+        runner = run_westock_ohlcv
     else:
         runner = run_quote if args.dataset == "quote" else run_kline
     stats = runner(args)

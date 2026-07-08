@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any, Iterable, Tuple
 import pandas as pd
 from sqlalchemy import and_, desc, func, select
 
-from src.storage import DatabaseManager, StockDaily, StockDailyKline, StockDailyQuote, StockDailyBaidu
+from src.storage import DatabaseManager, StockDaily, StockDailyKline, StockDailyQuote, StockDailyOhlcv
 
 logger = logging.getLogger(__name__)
 
@@ -390,30 +390,34 @@ class StockRepository:
             logger.error("查询 %s kline 覆盖失败: %s", code, e)
             return {"first": None, "last": None, "rows": 0}
 
-    def get_baidu_coverage(
+    def get_ohlcv_coverage(
         self,
         code: str,
         *,
         ktype: str = "1",
+        adj_type: str = "qfq",
+        data_source: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """查询 stock_daily_baidu 已存最早/最晚日期与条数。"""
+        """查询 stock_daily_ohlcv 已存最早/最晚日期与条数（源无关）。"""
         try:
             with self.db.get_session() as session:
-                first, last, cnt = session.execute(
-                    select(
-                        func.min(StockDailyBaidu.date),
-                        func.max(StockDailyBaidu.date),
-                        func.count(),
-                    ).where(
-                        and_(
-                            StockDailyBaidu.code == code,
-                            StockDailyBaidu.ktype == ktype,
-                        )
+                stmt = select(
+                    func.min(StockDailyOhlcv.date),
+                    func.max(StockDailyOhlcv.date),
+                    func.count(),
+                ).where(
+                    and_(
+                        StockDailyOhlcv.code == code,
+                        StockDailyOhlcv.ktype == ktype,
+                        StockDailyOhlcv.adj_type == adj_type,
                     )
-                ).one()
+                )
+                if data_source:
+                    stmt = stmt.where(StockDailyOhlcv.data_source == data_source)
+                first, last, cnt = session.execute(stmt).one()
             return {"first": first, "last": last, "rows": int(cnt or 0)}
         except Exception as e:
-            logger.error("查询 %s baidu 覆盖失败: %s", code, e)
+            logger.error("查询 %s ohlcv 覆盖失败: %s", code, e)
             return {"first": None, "last": None, "rows": 0}
 
     def load_kline_bulk(

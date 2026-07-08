@@ -3,7 +3,11 @@
 
 该接口是百度股市通网页前端真正在用的 K 线端点，相比旧的 ``selfselect/getstockquotation``：
 
-- 默认返回**正价不复权(bfq)**，不会出现旧接口 qfq 导致的历史负价（茅台 2015 负价问题消除）；
+- 默认返回**前复权(qfq)**：以最新价为基准，历史价按累计分红因子下调。
+  实测与 westock 不复权(quote)在最近交易日价格完全一致（如 2026-07-07 两源
+  close=1188.8、preClose=1206.91、ratio=-1.5% 全部相等），历史日两源相差累计
+  分红比例（如 2024-05-20 百度 close=1574.66 vs westock 不复权 1709，差 -7.86%）。
+  注意：旧注释称其「不复权(bfq)」是与实测相反的，已纠正。
 - 自带 换手率/涨跌幅/昨收/MA5·10·20（价+量）等字段；
 - 额外返回 ``reportData``（财报披露日）。
 
@@ -21,10 +25,12 @@ token 获取有两种方式（按优先级）：
 
 ``BaiduBackfillService`` 已默认接入方式 1，开箱即用、无需手动粘贴 token。
 
-marketData 字段顺序与百度 getquotation keys 完全一致（见 _BAIDU_FIELD_INDEX），
-落库列（date/open/high/low/close/volume/amount/range/ratio/turnoverratio/preClose/
-ma5avgprice/ma5volume/ma10avgprice/ma10volume/ma20avgprice/ma20volume/timestamp/time）
-与百度 keys 保持一致。
+marketData 字段顺序与百度 getquotation keys 完全一致（见 _BAIDU_FIELD_INDEX）。
+
+落库仅保留训练有价值的列（剔除可由 close/volume 推导的 MA、与 time 重复的 timestamp、
+以及 =close-preClose 的 range）：
+    date/open/high/low/close/volume/amount/ratio/turnoverratio/preClose/time
+MA(5/10/20) 价格与成交量由特征工程从 close/volume 滚动重算（analyzer 本就如此），不落库。
 """
 
 from __future__ import annotations
@@ -79,12 +85,16 @@ def _to_unix_ts(value: Optional[str]) -> Optional[str]:
 # ['timestamp','time','open','close','volume','high','low','amount',
 #  'range','ratio','turnoverratio','preClose',
 #  'ma5avgprice','ma5volume','ma10avgprice','ma10volume','ma20avgprice','ma20volume']
-# 注意：百度把 position 8 标为 range，但其真实含义是「涨跌额(change)」而非振幅；
-#       此处按需求“字段与百度一致”，沿用百度原始命名，不做语义纠正。
-#       旧代码把 ma10/ma20 指到 13/14，实际 13=ma5volume、14=ma10avgprice、16=ma20avgprice，
-#       已在此按 keys 顺序修正，并补全 ma5/10/20 的成交量 MA。
+#
+# 落库只保留训练有价值的列，故 _BAIDU_FIELD_INDEX 仅映射这些 key 在其原始行中的下标：
+#   time(1)/open(2)/close(3)/volume(4)/high(5)/low(6)/amount(7)/
+#   ratio(9)/turnoverratio(10)/preClose(11)
+# 删除项（均可由保留列推导，无需落库）：
+#   timestamp(0) 与 time 重复且原始 unix 值会引发时间泄漏；
+#   range(8) = close - preClose；
+#   ma5/10/20 avgprice = close 的滚动均值；ma5/10/20 volume = volume 的滚动均值
+#   （特征工程阶段从 close/volume 重算，analyzer 本就如此）。
 _BAIDU_FIELD_INDEX = {
-    "timestamp": 0,
     "time": 1,
     "open": 2,
     "close": 3,
@@ -92,16 +102,9 @@ _BAIDU_FIELD_INDEX = {
     "high": 5,
     "low": 6,
     "amount": 7,
-    "range": 8,          # 百度 keys 标 range（实为涨跌额 change）
-    "ratio": 9,          # 涨跌幅（%）
+    "ratio": 9,           # 涨跌幅（%）
     "turnoverratio": 10, # 换手率（%）
-    "preClose": 11,      # 昨收
-    "ma5avgprice": 12,
-    "ma5volume": 13,
-    "ma10avgprice": 14,
-    "ma10volume": 15,
-    "ma20avgprice": 16,
-    "ma20volume": 17,
+    "preClose": 11,       # 昨收
 }
 
 # 字符串型字段（不参与数值化）
@@ -119,10 +122,11 @@ def parse_baidu_response(payload: Optional[Dict[str, Any]], *, ktype: str = "1")
     """把百度 getquotation 响应解析为结构化 DataFrame。
 
     Returns:
-        含列的 DataFrame：date, ktype, 与百度 keys 完全一致的结构化字段
-        (timestamp/time/open/close/volume/high/low/amount/range/ratio/turnoverratio/
-        preClose/ma5avgprice/ma5volume/ma10avgprice/ma10volume/ma20avgprice/ma20volume)。
-        时间字段 time 只保留日期部分（YYYY-MM-DD）。无数据返回空 DataFrame（列为上述全集）。
+        含列的 DataFrame：date, ktype, 结构化字段
+        (time/open/close/volume/high/low/amount/ratio/turnoverratio/preClose)。
+        其中剔除了可由 close/volume 推导的 MA 列、与 time 重复的 timestamp、
+        以及 =close-preClose 的 range；时间字段 time 只保留日期部分（YYYY-MM-DD）。
+        无数据返回空 DataFrame（列为上述全集）。
     """
     columns = ["date", "ktype"] + _BAIDU_STRUCTURED_FIELDS
     if not payload:
@@ -226,6 +230,7 @@ class BaiduFetcher(BaseFetcher):
         start_time: str,
         end_time: Optional[str] = None,
         ktype: str = "1",
+        full: bool = True,
     ) -> Dict[str, str]:
         # 旧 ktype("1") 映射为 vapi 的 "day"
         api_ktype = _KTYPE_MAP.get(ktype, ktype)
@@ -240,14 +245,16 @@ class BaiduFetcher(BaseFetcher):
             "is_kc": "0",
             "ktype": api_ktype,
             "finClientType": "pc",
-            # 关键：不带 all=1 时接口只返回最近 2001 行（约 2018 年起），
-            # 无法回溯更早历史；带 all=1 返回全量（茅台可回 2001 上市）。
-            # start/end 仍发送以便服务端裁剪，本地再 _filter_by_range 兜底。
-            "all": "1",
+            # full=True：带 all=1 返回全量（茅台可回 2001 上市），用于首次/补齐深历史。
+            # full=False：不带 all=1，接口返回最近 2001 行（约 2018 年起）的「尾窗口」，
+            #   用于本地已存有深历史、只需刷新近期数据的场景，显著减少传输量。
+            # 注意：百度接口实测忽略 start_time/end_time，区间裁剪完全依赖本地 _filter_by_range。
             "chartType": "kline",
             "stock_type": self._market_type,
             "financeType": "stock",
         }
+        if full:
+            params["all"] = "1"
         # name 为展示字段，百度按 code 查询；未提供则不发送，避免空值干扰
         if self._name:
             params["name"] = self._name
@@ -286,9 +293,13 @@ class BaiduFetcher(BaseFetcher):
         start_time: str,
         end_time: Optional[str] = None,
         ktype: str = "1",
+        full: bool = True,
     ) -> pd.DataFrame:
-        """请求百度 vapi K 线并解析为结构化 DataFrame。"""
-        params = self._build_params(code, start_time, end_time, ktype)
+        """请求百度 vapi K 线并解析为结构化 DataFrame。
+
+        full: True 拉全量（all=1，回溯到上市日）；False 仅拉最近 2001 行尾窗口。
+        """
+        params = self._build_params(code, start_time, end_time, ktype, full=full)
         try:
             resp = requests.get(
                 _BAIDU_KLINE_ENDPOINT,
@@ -342,7 +353,7 @@ class BaiduFetcher(BaseFetcher):
     def fetch_report_dates(self, code: str, ktype: str = "1") -> list[str]:
         """返回该票的财报披露日列表（vapi 独有 ``reportData``，如 ['2024-04-03', ...]）。
 
-        用于「财报事件」特征；与日 K 落库解耦，不改动 stock_daily_baidu 表结构。
+        用于「财报事件」特征；与日 K 落库解耦，不改动 stock_daily_ohlcv 表结构。
         """
         params = self._build_params(code, "2010-01-01", None, ktype)
         try:
