@@ -7,14 +7,16 @@
 # 用法：
 #   ./server.sh start            # 启动（等同重启：先停旧再起新，含前端打包）
 #   ./server.sh restart          # 重启（打包前端 + 重新拉起后端）
+#   ./server.sh serve            # 只启动后端服务（跳过前端打包，每次都是重启）
 #   ./server.sh stop             # 关闭服务
 #   ./server.sh status           # 查看运行状态（只读）
 #   ./server.sh logs             # 实时跟踪日志（Ctrl+C 退出）
 #   ./server.sh restart --no-build   # 透传参数：跳过前端打包
 #   ./server.sh restart --port 8000  # 透传参数：指定端口
 #
-# 说明：start/restart/stop 的所有可选参数（--port/--host/--no-build/
+# 说明：start/restart/serve/stop 的所有可选参数（--port/--host/--no-build/
 #       --reinstall/--foreground 等）均会原样透传给 restart_server.sh。
+#       serve 等同于 restart --no-build：先停旧服务再拉起新的，但不打包前端。
 #
 # 兼容 Windows(Git Bash) 与 Linux/macOS。
 # =====================================================================
@@ -38,6 +40,10 @@ case "$cmd" in
   start|restart)
     exec bash "$RESTART_SH" "$@"
     ;;
+  serve)
+    # 只启动后端服务，跳过前端打包（每次都是重启：先停旧再起新）
+    exec bash "$RESTART_SH" --no-build "$@"
+    ;;
   stop)
     exec bash "$RESTART_SH" --stop "$@"
     ;;
@@ -57,7 +63,7 @@ case "$cmd" in
     ;;
   *)
     echo "未知命令: $cmd" >&2
-    echo "可用命令: start | stop | restart | status | logs | help" >&2
+    echo "可用命令: start | serve | stop | restart | status | logs | help" >&2
     exit 2
     ;;
 esac
