@@ -45,7 +45,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 import requests
 
-from .base import BaseFetcher, DataFetchError
+from .base import BaseFetcher, DataFetchError, normalize_stock_code
 from .baidu_token_provider import BaiduTokenProvider
 
 logger = logging.getLogger(__name__)
@@ -236,12 +236,15 @@ class BaiduFetcher(BaseFetcher):
     ) -> Dict[str, str]:
         # 旧 ktype("1") 映射为 vapi 的 "day"
         api_ktype = _KTYPE_MAP.get(ktype, ktype)
+        # 百度 query/code 仅接受纯数字代码（市场由 market_type 区分），
+        # 去后缀避免 .SZ/.SH/.BJ 被百度拒绝（实测带后缀直接 403/failed）。
+        bare = normalize_stock_code(code)
         params = {
             "srcid": "5353",
             "pointType": "string",
             "group": "quotation_kline_ab",
-            "query": code,
-            "code": code,
+            "query": bare,
+            "code": bare,
             "market_type": self._market_type,
             "newFormat": "1",
             "is_kc": "0",

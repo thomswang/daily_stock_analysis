@@ -180,8 +180,13 @@ def run_kline(args: argparse.Namespace) -> dict:
 
 def run_baidu(args: argparse.Namespace) -> dict:
     from src.services.backfill import BaiduBackfillService
+    from data_provider.base import normalize_stock_code
 
     codes = resolve_codes(args)
+    # 百度 vapi 的 query/code 仅接受纯数字代码（市场由 market_type 区分），
+    # 而 --all 从 stocks.index.json 读出的代码带 .SZ/.SH/.BJ 后缀会被百度拒绝（403）。
+    # 统一归一化为 6 位纯数字，与 westock-ohlcv 等同表数据源的 code 口径保持一致。
+    codes = [normalize_stock_code(c) for c in codes]
     logger.info("准备 baidu 回填：%d 只股票", len(codes))
     return BaiduBackfillService().run(
         codes,
@@ -324,7 +329,7 @@ def build_parser() -> argparse.ArgumentParser:
             mode="full",
             fresh_days=4,
             retry=2,
-            sleep=0.0,
+            sleep=0.1,
             progress=os.path.join("data", "baidu_backfill_progress.json"),
         ),
     )

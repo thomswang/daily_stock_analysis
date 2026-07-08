@@ -41,6 +41,8 @@ def run_backfill_job(
     start_log: Optional[str] = None,
     finish_log: Optional[str] = None,
     process_kwargs: Optional[Dict[str, Any]] = None,
+    fail_fast_on_error_substr: Optional[str] = None,
+    fail_fast_consecutive: int = 3,
 ) -> Dict[str, Any]:
     """执行全市场/批量回填主循环。"""
     if mode not in ("full", "incremental", "smart", "range"):
@@ -106,6 +108,7 @@ def run_backfill_job(
     }
     extra = process_kwargs or {}
 
+    consecutive_fail = 0
     for i, raw in enumerate(codes, 1):
         if stop_check and stop_check():
             logger.warning("收到停止信号，已处理 %d/%d，安全退出。", i - 1, total)
@@ -118,6 +121,9 @@ def run_backfill_job(
         prev_min = parse_date(ledger.get(code).get("min_start") or "")
         new_min = start_d if prev_min is None else min(prev_min, start_d)
 
+        is_failure = False
+        fail_text = ""
+        action = "failed"
         try:
             plain = normalize_stock_code(code)
             result = process_code(
@@ -137,36 +143,58 @@ def run_backfill_job(
             logger.warning("[%d/%d] %s %s 回填异常：%s", i, total, code, dataset, exc)
             ledger.update(code, status="failed", error=str(exc))
             stats["failed"] += 1
+            is_failure = True
+            fail_text = str(exc)
+            action = "failed"
             ledger.save()
-            continue
-
-        action = result["action"]
-        if action == "skipped":
-            stats["skipped"] += 1
-            ledger.update(
-                code, status="done", note="fresh", min_start=_iso(new_min),
-                last=_iso(result.get("last")), rows=result.get("rows"),
-            )
-        elif action == "empty":
-            stats["empty"] += 1
-            ledger.update(
-                code, status="empty", min_start=_iso(new_min),
-                error=result.get("error") or "数据源返回空",
-            )
-        elif action == "failed":
-            stats["failed"] += 1
-            ledger.update(code, status="failed", error=result.get("error"))
         else:
-            stats["fetched"] += 1
-            stats["rows_added"] += result.get("added", 0)
-            stats[rows_key] += result.get(rows_key, result.get("added", 0))
-            ledger.update(
-                code, status="done", error=None, min_start=_iso(new_min),
-                first=_iso(result.get("first")), last=_iso(result.get("last")),
-                rows=result.get("rows"), source=result.get("source"),
-            )
+            action = result["action"]
+            if action == "skipped":
+                stats["skipped"] += 1
+                ledger.update(
+                    code, status="done", note="fresh", min_start=_iso(new_min),
+                    last=_iso(result.get("last")), rows=result.get("rows"),
+                )
+            elif action == "empty":
+                stats["empty"] += 1
+                ledger.update(
+                    code, status="empty", min_start=_iso(new_min),
+                    error=result.get("error") or "数据源返回空",
+                )
+            elif action == "failed":
+                stats["failed"] += 1
+                ledger.update(code, status="failed", error=result.get("error"))
+                is_failure = True
+                fail_text = result.get("error") or ""
+            else:
+                stats["fetched"] += 1
+                stats["rows_added"] += result.get("added", 0)
+                stats[rows_key] += result.get(rows_key, result.get("added", 0))
+                ledger.update(
+                    code, status="done", error=None, min_start=_iso(new_min),
+                    first=_iso(result.get("first")), last=_iso(result.get("last")),
+                    rows=result.get("rows"), source=result.get("source"),
+                )
 
-        ledger.save()
+            ledger.save()
+
+        # ── 熔断：连续命中同一类错误（如百度 403 / IP 限流）即中止，避免继续轰炸 ──
+        if is_failure:
+            consecutive_fail += 1
+            if (
+                fail_fast_on_error_substr
+                and fail_fast_on_error_substr in fail_text
+                and consecutive_fail >= fail_fast_consecutive
+            ):
+                logger.error(
+                    "连续 %d 只失败且命中 '%s'（疑似数据源限流/IP 封锁），"
+                    "触发熔断提前退出，避免继续轰炸被风控。请排查网络/账号风控后重试。",
+                    consecutive_fail, fail_fast_on_error_substr,
+                )
+                break
+        else:
+            consecutive_fail = 0
+
 
         if i % max(log_every, 1) == 0 or i == total:
             logger.info(

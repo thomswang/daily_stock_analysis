@@ -132,6 +132,12 @@ class BaiduBackfillService:
                     "新增 baidu 行 %d，台账：%s"
                 ),
                 process_kwargs={"ktype": ktype, "full_mode": full_mode},
+                # 百度 vapi 强依赖 acs-token，IP 被风控时会统一返回空 403；
+                # 连续命中即熔断，避免 --all 全量轰炸把 IP 打进黑名单（本次根因）。
+                # 百度纯数字请求在健康 IP 下几乎不会 403，故连续 3 只即判为限流/封锁，
+                # 宁可早停也不要继续轰炸延长惩罚窗口。
+                fail_fast_on_error_substr="403",
+                fail_fast_consecutive=3,
             )
         finally:
             # 仅在内部创建的 provider 才负责关闭浏览器，避免影响调用方持有的实例
