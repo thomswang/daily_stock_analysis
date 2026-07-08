@@ -17,6 +17,54 @@
 
 ---
 
+## 速查表：常用命令
+
+> 以下命令可直接复制粘贴。百度账台用 `data/baidu_progress_tail.json`，westock 用 `data/westock_ohlcv_progress.json`。
+> 前导零代码走 `--all` / `--codes-file` 不经 shell，无需引号；只有 `--symbols` 必须加引号（见顶部提醒）。
+
+### 百度（历史尾窗口，主用）
+
+```bash
+# ① 首跑 / 日常全量尾窗口（老票≈2018 起，新股=上市日起，约 2000 行/只）
+python backfill.py baidu --all --no-full --end 2026-07-07 \
+  --progress data/baidu_progress_tail.json --retry 3 --sleep 1.5 --ktype 1
+
+# ② 续传：跳过已 done，只拉未处理 + failed（断点 / 403 熔断后必用）
+python backfill.py baidu --all --no-full --end 2026-07-07 \
+  --progress data/baidu_progress_tail.json --retry 3 --sleep 1.5 --ktype 1 --retry-failed
+
+# ③ 看进度（done / skipped / empty / failed 各自数量）
+python backfill.py baidu --progress-status --progress data/baidu_progress_tail.json
+
+# ④ 单只试跑（验证 token / 网络）
+python backfill.py baidu --symbols "600519" --mode range --start 2026-06-01 --end 2026-07-07 \
+  --progress data/baidu_test.json --retry 3 --sleep 1.5 --ktype 1
+```
+
+### westock（每日增量 + 周补漏）
+
+```bash
+# ⑤ 每日更新（交易日 16:00 后）
+python backfill.py westock-ohlcv --all --mode incremental \
+  --start 2010-01-01 --progress data/westock_ohlcv_progress.json --retry 2
+
+# ⑥ 周补漏（某天 daily 漏跑时补回这一周）
+python backfill.py westock-ohlcv --all --mode range \
+  --start 2026-07-01 --end 2026-07-07 \
+  --progress data/westock_ohlcv_progress.json --retry 2
+```
+
+### quote（周更估值 / 基本面，较慢）
+
+```bash
+# ⑦ 每周拉最近一周（不写本 OHLCV 表，落 stock_daily_quote）
+python backfill.py quote --all --mode range \
+  --start 2026-06-29 --end 2026-07-05 \
+  --progress data/progress_weekly.json --sleep 0.1 --retry 2
+```
+
+---
+
 ## 0. 进度台账（progress JSON）怎么看
 
 所有回填都靠一个 **进度台账 JSON** 驱动续传（百度用 `data/baidu_progress_tail.json`，westock 用各自的文件）。
