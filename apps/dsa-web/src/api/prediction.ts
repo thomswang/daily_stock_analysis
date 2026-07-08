@@ -12,6 +12,8 @@ import type {
   PredictionResponse,
   RecommendationsParams,
   RecommendationsResponse,
+  RecommendationBacktestParams,
+  RecommendationBacktestResponse,
 } from '../types/prediction';
 
 export const predictionApi = {
@@ -102,5 +104,24 @@ export const predictionApi = {
   industries: async (): Promise<IndustriesResponse> => {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/prediction/industries');
     return toCamelCase<IndustriesResponse>(response.data);
+  },
+
+  /**
+   * Recommendation backtest: simulate buying at Monday's open price, compute
+   * 1/3/5-day actual returns using the same recommended basket.
+   */
+  recommendationsBacktest: async (
+    params: RecommendationBacktestParams = {},
+  ): Promise<RecommendationBacktestResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/prediction/recommendations/backtest',
+      {
+        params: {
+          industry: params.industry || undefined,
+          top_n: params.topN ?? 20,
+        },
+      },
+    );
+    return toCamelCase<RecommendationBacktestResponse>(response.data);
   },
 };

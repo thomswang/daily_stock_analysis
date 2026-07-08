@@ -209,6 +209,56 @@ export interface RecommendationsParams {
   industryCap?: number | null;
 }
 
+// ============ Recommendation backtest (Mon open buy) ============
+
+export interface BacktestStockItem {
+  code: string;
+  stockName: string | null;
+  industry: string | null;
+  strengthScore: number;
+  rank: number;
+  buyDate: string;
+  priceSource: string;
+  buyPrice: number | null;
+  auctionPrice: number | null;
+  openPrice: number | null;
+  return1dPct: number | null;
+  return3dPct: number | null;
+  return5dPct: number | null;
+  klineJudgment: string;
+  klineSecondary: string;
+  volumeStatus: string;
+  note?: string | null;
+}
+
+export interface BacktestSummary {
+  total: number;
+  withData: number;
+  avg1dPct: number;
+  avg3dPct: number;
+  avg5dPct: number;
+  winRate1d: number;
+  winRate3d: number;
+  winRate5d: number;
+  best1dPct: number;
+  worst1dPct: number;
+}
+
+export interface RecommendationBacktestResponse {
+  asOfDate: string | null;
+  buyDate: string;
+  actualBuyDate: string;
+  strategyNote: string;
+  summary: BacktestSummary;
+  items: BacktestStockItem[];
+  disclaimer: string;
+}
+
+export interface RecommendationBacktestParams {
+  industry?: string;
+  topN?: number;
+}
+
 export interface PredictionResponse {
   stockCode: string;
   stockName: string | null;

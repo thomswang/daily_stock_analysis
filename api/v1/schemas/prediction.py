@@ -233,6 +233,60 @@ class RecommendationsResponse(BaseModel):
     disclaimer: str
 
 
+# ================ 推荐回测 ================
+
+class BacktestStockItem(BaseModel):
+    """单只推荐票的实际回测收益明细（以推荐日所在周一开盘价为买入价）。"""
+
+    code: str
+    stock_name: Optional[str] = None
+    industry: Optional[str] = None
+    strength_score: float = Field(..., description="强弱分 0~1")
+    rank: int = Field(..., description="清单内名次(1=最强)")
+
+    buy_date: str = Field(..., description="实际买入日(周一或最近交易日) YYYY-MM-DD")
+    price_source: str = Field(..., description="买入价来源: 集合竞价/开盘价/无数据")
+    buy_price: Optional[float] = Field(None, description="买入价(默认周一开盘价)")
+    auction_price: Optional[float] = Field(None, description="集合竞价价(暂等同于开盘价)")
+    open_price: Optional[float] = Field(None, description="开盘价")
+
+    return_1d_pct: Optional[float] = Field(None, description="1日(T+1收盘)相对买入价涨跌幅%")
+    return_3d_pct: Optional[float] = Field(None, description="3日(T+3收盘)相对买入价涨跌幅%")
+    return_5d_pct: Optional[float] = Field(None, description="5日(T+5收盘)相对买入价涨跌幅%")
+
+    kline_judgment: str = Field(..., description="K线形态主判断")
+    kline_secondary: str = Field(..., description="K线强度/确定性提示")
+    volume_status: str = Field(..., description="成交量状态: 放量/温和放量/正常/缩量/异常")
+    note: Optional[str] = Field(None, description="数据缺失/异常时的提示")
+
+
+class BacktestSummary(BaseModel):
+    """回测汇总统计。"""
+
+    total: int = Field(..., description="参与回测的股票数")
+    with_data: int = Field(..., description="有完整收益数据的股票数")
+    avg_1d_pct: float = Field(..., description="平均1日收益%")
+    avg_3d_pct: float = Field(..., description="平均3日收益%")
+    avg_5d_pct: float = Field(..., description="平均5日收益%")
+    win_rate_1d: float = Field(..., description="1日正收益占比 0~1")
+    win_rate_3d: float = Field(..., description="3日正收益占比 0~1")
+    win_rate_5d: float = Field(..., description="5日正收益占比 0~1")
+    best_1d_pct: float = Field(..., description="最佳1日收益%")
+    worst_1d_pct: float = Field(..., description="最差1日收益%")
+
+
+class RecommendationBacktestResponse(BaseModel):
+    """推荐回测完整响应。"""
+
+    as_of_date: Optional[str] = Field(None, description="快照日(推荐日)")
+    buy_date: str = Field(..., description="理论买入日(周一) YYYY-MM-DD")
+    actual_buy_date: str = Field(..., description="实际生效买入日(若周一休市则顺延) YYYY-MM-DD")
+    strategy_note: str = Field(..., description="本次回测使用的交易口径说明")
+    summary: BacktestSummary
+    items: List[BacktestStockItem] = Field(default_factory=list)
+    disclaimer: str
+
+
 class IndustryOption(BaseModel):
     industry: str
     count: int = Field(..., description="该行业当日被打分的股票数")
