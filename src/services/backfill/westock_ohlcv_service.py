@@ -84,7 +84,7 @@ class WestockOhlcvBackfillService:
                 stop_check=stop_check,
                 meta_extra={"adj_type": "qfq", "data_source": "Westock"},
                 start_log=(
-                    "开始 westock ohlcv 回填：%d 只，区间 %s ~ %s，模式=%s，"
+                    "开始 westock ohlcv 回填：%d 只，区间 %s ~ %s，分段=%s，"
                     "限流=%.2fs，force=%s"
                 ),
                 finish_log=(

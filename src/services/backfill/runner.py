@@ -91,7 +91,7 @@ def run_backfill_job(
         logger.info(start_log, total, start_date, end_date, mode, sleep, force)
     else:
         logger.info(
-            "开始 %s 回填：%d 只，区间 %s ~ %s，模式=%s，限流=%.2fs，force=%s",
+            "开始 %s 回填：%d 只，区间 %s ~ %s，分段=%s，限流=%.2fs，force=%s",
             dataset, total, start_date, end_date, mode, sleep, force,
         )
 

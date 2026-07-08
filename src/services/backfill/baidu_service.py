@@ -100,7 +100,10 @@ class BaiduBackfillService:
         ktype: str = "1",
         full_mode: str = "auto",
     ) -> Dict[str, Any]:
-        logger.info("baidu 回填 full_mode=%s", full_mode)
+        logger.info(
+            "baidu 回填：分段策略(mode)=%s，全量策略(full_mode)=%s",
+            mode, full_mode,
+        )
         try:
             return run_backfill_job(
                 dataset=self.dataset,
@@ -121,7 +124,7 @@ class BaiduBackfillService:
                 stop_check=stop_check,
                 meta_extra={"ktype": ktype},
                 start_log=(
-                    "开始 baidu kline 回填：%d 只，区间 %s ~ %s，模式=%s，"
+                    "开始 baidu kline 回填：%d 只，区间 %s ~ %s，分段=%s，"
                     "限流=%.2fs，force=%s"
                 ),
                 finish_log=(

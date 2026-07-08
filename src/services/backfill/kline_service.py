@@ -76,7 +76,7 @@ class KlineBackfillService:
             stop_check=stop_check,
             meta_extra={"adj_type": adj},
             start_log=(
-                "开始 kline 回填：%d 只，区间 %s ~ %s，模式=%s，限流=%.2fs，force=%s"
+                "开始 kline 回填：%d 只，区间 %s ~ %s，分段=%s，限流=%.2fs，force=%s"
             ),
             finish_log=(
                 "kline 回填结束：拉取 %d / 跳过 %d / 失败 %d / 空 %d，"
