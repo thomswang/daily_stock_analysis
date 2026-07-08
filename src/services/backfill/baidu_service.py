@@ -202,6 +202,7 @@ class BaiduBackfillService:
         need_full = _resolve_need_full(full_mode, local_first, effective_start)
 
         total_rows = 0
+        total_reports = 0
         got_any = False
         for seg_start, seg_end in segments:
             result, err = self._ingest_with_retry(
@@ -221,6 +222,8 @@ class BaiduBackfillService:
                 return {"action": "failed", "error": err}
             if result is not None:
                 total_rows += int(result.rows_saved)
+                if result.reports_saved:
+                    total_reports += int(result.reports_saved)
                 got_any = True
 
         if not got_any:
@@ -242,6 +245,7 @@ class BaiduBackfillService:
             "action": "fetched",
             "added": total_rows,
             "baidu_rows": total_rows,
+            "baidu_reports": total_reports,
             "first": cov2.get("first"),
             "last": cov2.get("last"),
             "rows": cov2.get("rows"),

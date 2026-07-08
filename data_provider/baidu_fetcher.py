@@ -39,8 +39,9 @@ from __future__ import annotations
 import calendar
 import logging
 import os
+import re
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -180,6 +181,44 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+# 百度 reportData 的文案形如：
+#   "财报发布: 2021FY总营收1094.64亿元 归母净利润524.60亿元"
+#   "财报发布: 2022Q1总营收331.87亿元 归母净利润172.45亿元"
+# 报告期类型：FY（年报）/ Q1/Q2/Q3/Q4（季报）/ H1/H2（半年）/ M3/M6/M9/M12（单季累计）。
+def parse_baidu_report_data(payload: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """从百度 getquotation 响应体解析 reportData，产出原始财报披露事件。
+
+    每个披露日（reportData 的 key）即一条记录，原样保留该日全部原始
+    entries（含 data 文案与 xcxQuery 深链）。结构化指标（营收/净利润等）
+    由下游按需从 raw_json 解析，便于以后扩展提取维度。
+
+    Returns:
+        列表，单条形如 ``{"report_date": "2021-03-31", "raw": [...]}``。
+        无数据或格式非法返回空列表。
+    """
+    if not payload:
+        return []
+    report = (payload.get("Result") or {}).get("reportData") or {}
+    if not isinstance(report, dict):
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for date_str, entries in report.items():
+        if not isinstance(entries, list) or not entries:
+            continue
+        report_date = (date_str or "")[:10]
+        try:
+            datetime.strptime(report_date, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            continue
+        out.append({
+            "report_date": report_date,
+            "raw": entries,
+        })
+    return out
+
+
+
 def _filter_by_range(
     df: pd.DataFrame,
     start_time: str,
@@ -293,25 +332,27 @@ class BaiduFetcher(BaseFetcher):
             "BaiduFetcher 缺少 acs-token：请设置环境变量 BAIDU_ACS_TOKEN，或注入 BaiduTokenProvider 自动获取（需 playwright + chromium）。"
         )
 
-    def fetch_kline_df(
+    def _request_payload(
         self,
         code: str,
         start_time: str,
         end_time: Optional[str] = None,
         ktype: str = "1",
         full: bool = True,
-    ) -> pd.DataFrame:
-        """请求百度 vapi K 线并解析为结构化 DataFrame，再按 start/end 本地裁剪。
+    ) -> Dict[str, Any]:
+        """请求百度 vapi K 线，返回解析后的 JSON 响应体（含 marketData 与 reportData）。
 
-        full: True 拉全量（all=1，回溯到上市日）；False 仅拉最近约 2000 行尾窗口
-        （老票≈2018 起，新股=上市日起）。
+        统一处理 403（acs-token 过期则强制刷新重试一次）、HTTP 错误、ResultCode
+        错误。K 线 DataFrame 与财报 reportData 均从同一响应体解析，故本方法为二者
+        共用入口，避免为财报额外发请求（百度限流敏感）。
         """
         params = self._build_params(code, start_time, end_time, ktype, full=full)
+        headers = self._build_headers()
         try:
             resp = requests.get(
                 _BAIDU_KLINE_ENDPOINT,
                 params=params,
-                headers=self._build_headers(),
+                headers=headers,
                 timeout=_BAIDU_HTTP_TIMEOUT,
             )
         except Exception as exc:
@@ -353,9 +394,44 @@ class BaiduFetcher(BaseFetcher):
             raise DataFetchError(
                 f"BaiduFetcher ResultCode={payload.get('ResultCode')}: {payload.get('Result')}"
             )
+        return payload
 
+    def fetch_kline_df(
+        self,
+        code: str,
+        start_time: str,
+        end_time: Optional[str] = None,
+        ktype: str = "1",
+        full: bool = True,
+    ) -> pd.DataFrame:
+        """请求百度 vapi K 线并解析为结构化 DataFrame，再按 start/end 本地裁剪。
+
+        full: True 拉全量（all=1，回溯到上市日）；False 仅拉最近约 2000 行尾窗口
+        （老票≈2018 起，新股=上市日起）。
+        """
+        payload = self._request_payload(code, start_time, end_time, ktype=ktype, full=full)
         df = parse_baidu_response(payload, ktype=ktype)
         return _filter_by_range(df, start_time, end_time)
+
+    def fetch_kline_and_reports(
+        self,
+        code: str,
+        start_time: str,
+        end_time: Optional[str] = None,
+        ktype: str = "1",
+        full: bool = True,
+    ) -> Tuple[pd.DataFrame, List[Dict[str, Any]]]:
+        """单次请求同时返回 (K 线 DataFrame, 财报披露事件列表)。
+
+        百度 vapi 在 K 线响应体内附带 ``reportData``（财报披露事件），尾窗口与全量
+        模式均返回且内容一致；故一次请求即可同时拿到日线与财报，无需为财报再发请求
+        （百度对单 IP 请求频率敏感，少一次请求少一次限流风险）。
+        """
+        payload = self._request_payload(code, start_time, end_time, ktype=ktype, full=full)
+        df = parse_baidu_response(payload, ktype=ktype)
+        df = _filter_by_range(df, start_time, end_time)
+        reports = parse_baidu_report_data(payload)
+        return df, reports
 
     def fetch_report_dates(self, code: str, ktype: str = "1") -> list[str]:
         """返回该票的财报披露日列表（vapi 独有 ``reportData``，如 ['2024-04-03', ...]）。

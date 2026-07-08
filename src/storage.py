@@ -334,6 +334,46 @@ class StockDailyOhlcv(Base):
         )
 
 
+class StockFinancialReport(Base):
+    """个股财报披露事件原始数据（季度频，百度 vapi reportData 落库）。
+
+    与日 K（stock_daily_ohlcv）解耦存储：一份财报对应一个披露日，财务数字
+    属「季度截面」而非「日频时间序列」，单独成表避免日线表语义混乱。
+
+    仅保留定位字段 + 原始数据，不做任何结构化提取：
+      - code：股票代码
+      - report_date：财报披露日（来自 reportData 的 key，如 2021-03-31）
+      - raw_json：该披露日的全部原始 entries（list[dict]，含 data 文案与
+        xcxQuery 深链）原样存为 JSON 字符串，"用到时再取"。结构化指标
+        （营收/净利润等）由下游按需从 raw_json 解析，便于以后扩展维度。
+      - created_at / updated_at：落库/更新时间
+    按 (code, report_date) 唯一 upsert。
+    """
+
+    __tablename__ = "stock_financial_report"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    code = Column(String(16), nullable=False, index=True)
+    report_date = Column(Date, nullable=False, index=True)
+
+    raw_json = Column(Text)        # 原始 reportData[report_date] entries（JSON 字符串）
+
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint("code", "report_date",
+                         name="uix_fin_report_code_date"),
+        Index("ix_fin_report_code_date", "code", "report_date"),
+    )
+
+    def __repr__(self):
+        return (
+            f"<StockFinancialReport(code={self.code}, date={self.report_date}, "
+            f"has_raw={self.raw_json is not None})>"
+        )
+
+
 class StockIndustry(Base):
     """
     个股所属行业快照（point-in-time 归属）
@@ -1550,6 +1590,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_stock_daily_columns()
             self._ensure_ohlcv_columns()
+            self._ensure_financial_report_table()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
             self._ensure_intelligence_items_unique_index()
@@ -1789,6 +1830,33 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                             time.sleep(delay)
                         continue
                     raise
+
+    def _ensure_financial_report_table(self) -> None:
+        """确保 stock_financial_report 表结构与当前模型一致；不一致则删表重建。
+
+        用户已确认财报数据可丢弃、无需兼容历史库，故采用最简洁的
+        「结构比对 → 不一致即 DROP 重建」策略，避免冗长的逐列迁移脚本。
+        """
+        if not self._is_sqlite_engine:
+            return
+        try:
+            inspector = inspect(self._engine)
+            table_name = StockFinancialReport.__tablename__
+            if not inspector.has_table(table_name):
+                StockFinancialReport.__table__.create(self._engine, checkfirst=True)
+                return
+            existing_cols = {c["name"] for c in inspector.get_columns(table_name)}
+            model_cols = {c.name for c in StockFinancialReport.__table__.columns}
+            if existing_cols == model_cols:
+                return
+            with self._engine.begin() as conn:
+                conn.exec_driver_sql(f"DROP TABLE IF EXISTS {table_name}")
+            StockFinancialReport.__table__.create(self._engine, checkfirst=True)
+            logger.info("[fin_report] 表结构变更，已删表重建: %s", table_name)
+        except Exception as exc:
+            logger.warning(
+                "[fin_report] 表结构检查失败，交 create_all 兜底: %s", exc
+            )
 
     def _ensure_llm_usage_telemetry_columns(self) -> None:
         """Add nullable P0a usage telemetry columns to existing SQLite DBs."""
@@ -3429,7 +3497,114 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 for r in rows
             ]
 
+    def save_financial_reports(
+        self,
+        code: str,
+        reports: List[Dict[str, Any]],
+    ) -> int:
+        """保存个股财报披露原始数据到 stock_financial_report（upsert）。
+
+        reports: ``parse_baidu_report_data`` 产出的列表，单条形如
+            ``{"report_date": date, "raw": [原始 entries...]}``。
+        仅存定位字段 + raw_json，结构化指标由下游按需解析。
+        唯一键 (code, report_date)，冲突时覆盖 raw_json 与 updated_at。
+        SQLite 分支按 chunk upsert 避免绑定参数上限。
+        """
+        if not reports:
+            return 0
+
+        now = datetime.now()
+        rows: List[Dict[str, Any]] = []
+        for r in reports:
+            rd = self._normalize_daily_date(r.get("report_date"))
+            if rd is None:
+                continue
+            raw_entries = r.get("raw")
+            rows.append({
+                "code": code,
+                "report_date": rd,
+                "raw_json": json.dumps(raw_entries, ensure_ascii=False)
+                if raw_entries is not None else None,
+                "created_at": now,
+                "updated_at": now,
+            })
+        if not rows:
+            return 0
+
+        fin_fields = ["raw_json"]
+
+        def _write(session: Session) -> int:
+            if self._is_sqlite_engine:
+                _CHUNK = 40
+                for i in range(0, len(rows), _CHUNK):
+                    chunk = rows[i : i + _CHUNK]
+                    stmt = sqlite_insert(StockFinancialReport).values(chunk)
+                    stmt = stmt.on_conflict_do_update(
+                        index_elements=["code", "report_date"],
+                        set_={**{f: stmt.excluded[f] for f in fin_fields},
+                              "updated_at": stmt.excluded.updated_at},
+                    )
+                    session.execute(stmt)
+                # 返回本次处理的记录数（新增+覆盖），幂等重跑也反映实际落库量
+                return len(rows)
+
+            existing_rows = {
+                (row.code, row.report_date): row
+                for row in session.execute(
+                    select(StockFinancialReport).where(
+                        StockFinancialReport.code == code
+                    )
+                ).scalars().all()
+            }
+            for record in rows:
+                key = (record["code"], record["report_date"])
+                existing = existing_rows.get(key)
+                if existing is None:
+                    session.add(StockFinancialReport(**record))
+                    continue
+                for field in fin_fields:
+                    setattr(existing, field, record.get(field))
+                existing.updated_at = record["updated_at"]
+            return len(rows)
+
+        try:
+            saved = self._run_write_transaction(
+                f"save_financial_reports[{code}]",
+                _write,
+            )
+            logger.info("保存 %s 财报 %d 条", code, saved)
+            return saved
+        except Exception as exc:
+            logger.error("保存 %s 财报失败: %s", code, exc)
+            raise
+
+    def get_financial_reports(
+        self,
+        code: str,
+        *,
+        start_date: Optional[date] = None,
+        end_date: Optional[date] = None,
+    ) -> List[Dict[str, Any]]:
+        """查询个股财报披露原始数据（按 code + 日期区间，升序）。"""
+        with self.get_session() as session:
+            stmt = select(StockFinancialReport).where(StockFinancialReport.code == code)
+            if start_date is not None:
+                stmt = stmt.where(StockFinancialReport.report_date >= start_date)
+            if end_date is not None:
+                stmt = stmt.where(StockFinancialReport.report_date <= end_date)
+            stmt = stmt.order_by(StockFinancialReport.report_date)
+            rows = session.execute(stmt).scalars().all()
+            return [
+                {
+                    "code": r.code,
+                    "report_date": r.report_date.isoformat() if r.report_date else None,
+                    "raw_json": r.raw_json,
+                }
+                for r in rows
+            ]
+
     def get_analysis_context(
+
         self, 
         code: str,
         target_date: Optional[date] = None

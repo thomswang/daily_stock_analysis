@@ -79,16 +79,27 @@ class BaiduKlineIngestor:
         （老票≈2018 起，新股=上市日起），用于已存有深历史、只需刷新近期数据的场景。
         """
         ktype = ktype or self._ktype
-        df = self.fetcher.fetch_kline_df(
+        # 单次请求同时拿到 K 线与财报披露事件（百度 reportData 随 K 线响应返回，
+        # 零额外请求），财报解析/落库失败不影响 K 线主流程。
+        df, reports = self.fetcher.fetch_kline_and_reports(
             code, start.isoformat(), end.isoformat(), ktype=ktype, full=full
         )
         if df is None or df.empty:
             return KlinePersistResult(
-                rows_saved=0, source=self.source_name, rows_fetched=0
+                rows_saved=0, source=self.source_name, rows_fetched=0, reports_saved=0
             )
         saved = self.db.save_ohlcv_kline(
             df, code, data_source=self.source_name, ktype=ktype, adj_type="qfq"
         )
+        reports_saved: Optional[int] = None
+        if reports:
+            try:
+                reports_saved = self.db.save_financial_reports(
+                    code, reports
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("保存 %s 财报失败（K 线不受影响）: %s", code, exc)
         return KlinePersistResult(
-            rows_saved=saved, source=self.source_name, rows_fetched=len(df)
+            rows_saved=saved, source=self.source_name, rows_fetched=len(df),
+            reports_saved=reports_saved,
         )
