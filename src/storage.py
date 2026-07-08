@@ -284,8 +284,9 @@ class StockDailyOhlcv(Base):
     设计取舍：
     - 单表按 (code, date, ktype, adj_type, data_source) 唯一；不再按年份/代码分表。
     - 只落库训练有价值的列（open/high/low/close/volume/amount/ratio/
-      turnoverratio/preClose/time）；MA(5/10/20) 价格与成交量、涨跌额、unix 时间戳
-      均可由这些列在特征工程阶段推导，不落库，保持训练集精简。
+      turnoverratio/time）；MA(5/10/20) 价格与成交量、涨跌额、unix 时间戳、
+      preClose（=前一日 close，可推导）均可由这些列在特征工程阶段推导，不落库，
+      保持训练集精简。
     - volume 单位=股，amount 单位=元；与 stock_daily_kline 的 volume(股) 口径一致，
       join 无需换算。westock quote --date 的 volume(手) 入此表前需 ×100 转成股。
     """
@@ -300,7 +301,8 @@ class StockDailyOhlcv(Base):
 
     # 结构化字段：仅保留训练有价值的列（详见 _BAIDU_FIELD_INDEX）。
     # 剔除项：MA(5/10/20) 价格/成交量（可由 close/volume 滚动重算）、
-    # timestamp（与 time 重复且原始 unix 值会引发时间泄漏）、range（=close-preClose 可推导）。
+    # timestamp（与 time 重复且原始 unix 值会引发时间泄漏）、range（=close-preClose 可推导）、
+    # preClose（=前一日 close，连续 qfq 序列下可直接由 close 偏移得到）。
     open = Column(Float)
     high = Column(Float)
     low = Column(Float)
@@ -309,7 +311,6 @@ class StockDailyOhlcv(Base):
     amount = Column(Float)            # 成交额（元）
     ratio = Column(Float)             # 涨跌幅（%）
     turnoverratio = Column(Float)     # 换手率（%）
-    preClose = Column(Float)          # 昨收
     time = Column(String(32))         # 日期（YYYY-MM-DD），时间索引
 
     data_source = Column(String(50), nullable=False, default="BaiduFetcher")
@@ -3271,7 +3272,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         structured_fields = [
             "open", "high", "low", "close", "volume", "amount",
-            "ratio", "turnoverratio", "preClose", "time",
+            "ratio", "turnoverratio", "time",
         ]
         now = datetime.now()
         records_by_key: Dict[Tuple[str, date], Dict[str, Any]] = {}
@@ -3421,7 +3422,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     "amount": r.amount,
                     "ratio": r.ratio,
                     "turnoverratio": r.turnoverratio,
-                    "preClose": r.preClose,
                     "time": r.time,
                     "data_source": r.data_source,
                     "fetched_at": r.fetched_at.isoformat() if r.fetched_at else None,

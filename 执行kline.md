@@ -2,6 +2,13 @@
 
 数据源：腾讯 fqkline API → 表 `stock_daily_kline`（前复权 OHLCV，HTTP 直连，800 条/次）
 
+> 相关：统一训练主表 `stock_daily_ohlcv`（百度历史 + westock 每日增量）的操作见 [执行ohlcv.md](执行ohlcv.md)。
+> `stock_daily_kline` 按约束**不可改动**，与本表并存、互不影响。
+
+> 🔥 **`--symbols` 前导零代码必须加引号**：如 `--symbols "000001,001258"`。Git Bash / PowerShell 会把
+> 未加引号的 `000001` 当数字剥掉前导零（`000001,001258` → `1,1258`），导致拉取失败或落到错误代码。
+> `--all` / `--codes-file` 不受影响（代码来自 JSON 列表，不经 shell）。详见 [执行ohlcv.md](执行ohlcv.md)。
+
 统一入口：`python backfill.py kline ...`
 
 ---

@@ -28,9 +28,10 @@ token 获取有两种方式（按优先级）：
 marketData 字段顺序与百度 getquotation keys 完全一致（见 _BAIDU_FIELD_INDEX）。
 
 落库仅保留训练有价值的列（剔除可由 close/volume 推导的 MA、与 time 重复的 timestamp、
-以及 =close-preClose 的 range）：
-    date/open/high/low/close/volume/amount/ratio/turnoverratio/preClose/time
-MA(5/10/20) 价格与成交量由特征工程从 close/volume 滚动重算（analyzer 本就如此），不落库。
+以及 =close-preClose 的 range、以及 =前一日 close 的 preClose）：
+    date/open/high/low/close/volume/amount/ratio/turnoverratio/time
+MA(5/10/20) 价格与成交量由特征工程从 close/volume 滚动重算（analyzer 本就如此），不落库；
+preClose(=前一日 close) 同理可在特征工程阶段由 close 偏移得到，不落库。
 """
 
 from __future__ import annotations
