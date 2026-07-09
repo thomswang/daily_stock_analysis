@@ -252,7 +252,7 @@ class BacktestStockItem(BaseModel):
 
     return_1d_pct: Optional[float] = Field(None, description="1日(T+1收盘)相对买入价涨跌幅%")
     return_3d_pct: Optional[float] = Field(None, description="3日(T+3收盘)相对买入价涨跌幅%")
-    return_5d_pct: Optional[float] = Field(None, description="5日(T+5收盘)相对买入价涨跌幅%")
+    return_wk_pct: Optional[float] = Field(None, description="当周收益(周一开盘买→当周周五收盘卖)相对买入价涨跌幅%")
 
     kline_judgment: str = Field(..., description="K线形态主判断")
     kline_secondary: str = Field(..., description="K线强度/确定性提示")
@@ -267,10 +267,10 @@ class BacktestSummary(BaseModel):
     with_data: int = Field(..., description="有完整收益数据的股票数")
     avg_1d_pct: float = Field(..., description="平均1日收益%")
     avg_3d_pct: float = Field(..., description="平均3日收益%")
-    avg_5d_pct: float = Field(..., description="平均5日收益%")
+    avg_wk_pct: float = Field(..., description="平均当周收益%(周一开买→周五收卖)")
     win_rate_1d: float = Field(..., description="1日正收益占比 0~1")
     win_rate_3d: float = Field(..., description="3日正收益占比 0~1")
-    win_rate_5d: float = Field(..., description="5日正收益占比 0~1")
+    win_rate_wk: float = Field(..., description="当周正收益占比 0~1")
     best_1d_pct: float = Field(..., description="最佳1日收益%")
     worst_1d_pct: float = Field(..., description="最差1日收益%")
 

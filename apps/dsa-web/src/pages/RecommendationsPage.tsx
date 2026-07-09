@@ -72,13 +72,13 @@ const TEXT = {
     btColOpen: '开盘价',
     btColR1: '1日收益',
     btColR3: '3日收益',
-    btColR5: '5日收益',
+    btColR5: '当周收益',
     btColKline: 'K线判断',
     btColVol: '成交量',
     btSummaryTotal: '回测样本',
     btSummaryAvg1: '平均1日',
     btSummaryAvg3: '平均3日',
-    btSummaryAvg5: '平均5日',
+    btSummaryAvg5: '平均当周',
     btSummaryBest: '最佳1日',
     btSummaryWorst: '最差1日',
   },
@@ -130,13 +130,13 @@ const TEXT = {
     btColOpen: 'Open',
     btColR1: '1D ret',
     btColR3: '3D ret',
-    btColR5: '5D ret',
+    btColR5: 'Wk ret',
     btColKline: 'K-line',
     btColVol: 'Volume',
     btSummaryTotal: 'Samples',
     btSummaryAvg1: 'Avg 1D',
     btSummaryAvg3: 'Avg 3D',
-    btSummaryAvg5: 'Avg 5D',
+    btSummaryAvg5: 'Avg Wk',
     btSummaryBest: 'Best 1D',
     btSummaryWorst: 'Worst 1D',
   },
@@ -341,8 +341,8 @@ const BacktestPanel: React.FC<{
         />
         <StatCard
           label={text.btSummaryAvg5}
-          value={<span className={s.avg5dPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(s.avg5dPct > 0 ? '+' : '') + s.avg5dPct.toFixed(2) + '%'}</span>}
-          hint={`胜率 ${(s.winRate5d * 100).toFixed(0)}%`}
+          value={<span className={s.avgWkPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(s.avgWkPct > 0 ? '+' : '') + s.avgWkPct.toFixed(2) + '%'}</span>}
+          hint={`胜率 ${(s.winRateWk * 100).toFixed(0)}%`}
         />
         <StatCard
           label={text.btSummaryBest}
@@ -408,7 +408,7 @@ const BacktestPanel: React.FC<{
                 </td>
                 <td className="py-2.5 pr-2 text-right align-middle"><ReturnCell value={it.return1dPct} /></td>
                 <td className="py-2.5 pr-2 text-right align-middle"><ReturnCell value={it.return3dPct} /></td>
-                <td className="py-2.5 pr-2 text-right align-middle"><ReturnCell value={it.return5dPct} /></td>
+                <td className="py-2.5 pr-2 text-right align-middle"><ReturnCell value={it.returnWkPct} /></td>
                 <td className="py-2.5 pr-2 text-center align-middle">
                   <KLineChip primary={it.klineJudgment} secondary={it.klineSecondary} />
                 </td>

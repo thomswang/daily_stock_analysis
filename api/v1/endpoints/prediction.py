@@ -259,11 +259,12 @@ def prediction_recommendations_backtest(
         f"快照日={as_of_date.isoformat()} (周{['一','二','三','四','五','六','日'][as_of_date.weekday()]})"
         f"，理论买入日=周一 {monday.isoformat()}"
         f"，实际买入日(顺延后)={actual_buy_date.isoformat()}"
+        f"；执行口径=买入日开盘(集合竞价)买入→当周周五收盘卖出(与训练标签/cross_section一致)"
     )
 
     # 3-5. 逐票回测
     items: List[BacktestStockItem] = []
-    returns_1d, returns_3d, returns_5d = [], [], []
+    returns_1d, returns_3d, returns_wk = [], [], []
     for it in rec.get("items", []):
         code = (it.get("code") or "").strip().upper()
         if not code:
@@ -280,7 +281,7 @@ def prediction_recommendations_backtest(
                 buy_date=actual_buy_date.isoformat(),
                 price_source="无数据",
                 buy_price=None, auction_price=None, open_price=None,
-                return_1d_pct=None, return_3d_pct=None, return_5d_pct=None,
+                return_1d_pct=None, return_3d_pct=None, return_wk_pct=None,
                 kline_judgment="不确定", kline_secondary="待观察",
                 volume_status="异常",
                 note="本地无K线数据(可能未回填或停牌)",
@@ -299,7 +300,7 @@ def prediction_recommendations_backtest(
                 rank=int(it.get("rank") or 0),
                 buy_date=actual_buy_date.isoformat(),
                 price_source="无数据", buy_price=None, auction_price=None, open_price=None,
-                return_1d_pct=None, return_3d_pct=None, return_5d_pct=None,
+                return_1d_pct=None, return_3d_pct=None, return_wk_pct=None,
                 kline_judgment="不确定", kline_secondary="待观察",
                 volume_status="异常", note="买入日及之后无K线数据",
             ))
@@ -312,10 +313,11 @@ def prediction_recommendations_backtest(
         buy_price = open_price
         buy_price_src = "集合竞价"
 
-        # 1/3/5 日收益：以 T+1/T+3/T+5 收盘相对买入价
+        # 1/3 日收益率 T+1/T+3 收盘；当周收益=买入日(周一)开盘→当周周五收盘(T+4)
+        # 与训练标签 make_weekly_open_close_return 的"下周一开买、当周周五收卖"完全对齐。
         ret_1d = _pct_return_at(kdf, buy_idx, 1)
         ret_3d = _pct_return_at(kdf, buy_idx, 3)
-        ret_5d = _pct_return_at(kdf, buy_idx, 5)
+        ret_wk = _pct_return_at(kdf, buy_idx, 4)
 
         kline_primary, kline_secondary = _analyze_kline(kdf, buy_idx)
         volume_status = _analyze_volume(kdf, buy_idx)
@@ -324,8 +326,8 @@ def prediction_recommendations_backtest(
             returns_1d.append(ret_1d)
         if ret_3d is not None:
             returns_3d.append(ret_3d)
-        if ret_5d is not None:
-            returns_5d.append(ret_5d)
+        if ret_wk is not None:
+            returns_wk.append(ret_wk)
 
         items.append(BacktestStockItem(
             code=code, stock_name=it.get("stock_name"), industry=it.get("industry"),
@@ -338,7 +340,7 @@ def prediction_recommendations_backtest(
             open_price=round(open_price, 2),
             return_1d_pct=round(ret_1d, 2) if ret_1d is not None else None,
             return_3d_pct=round(ret_3d, 2) if ret_3d is not None else None,
-            return_5d_pct=round(ret_5d, 2) if ret_5d is not None else None,
+            return_wk_pct=round(ret_wk, 2) if ret_wk is not None else None,
             kline_judgment=kline_primary, kline_secondary=kline_secondary,
             volume_status=volume_status,
         ))
@@ -350,10 +352,10 @@ def prediction_recommendations_backtest(
         with_data=len([i for i in items if i.buy_price is not None]),
         avg_1d_pct=_avg(returns_1d),
         avg_3d_pct=_avg(returns_3d),
-        avg_5d_pct=_avg(returns_5d),
+        avg_wk_pct=_avg(returns_wk),
         win_rate_1d=_win(returns_1d),
         win_rate_3d=_win(returns_3d),
-        win_rate_5d=_win(returns_5d),
+        win_rate_wk=_win(returns_wk),
         best_1d_pct=round(max(returns_1d), 2) if returns_1d else 0.0,
         worst_1d_pct=round(min(returns_1d), 2) if returns_1d else 0.0,
     )

@@ -365,8 +365,17 @@ class ModelTrainingService:
         # 传入与 X 行对齐的日期，启用"全局时序切分"（按日历切 train/valid，
         # 避免多股票堆叠时按行切退化成按股票切、时间段重叠而泄露）。
         dates_arr = pd.to_datetime(pd.Series(all_dates), errors="coerce").to_numpy()
+        # embargo：训练/验证间挖出的缓冲天数，须 ≥ 标签最长前瞻窗口，否则会泄露。
+        # 旧 absolute/relative 标签前瞻 = horizon(默认5) 个交易日；
+        # 新 cross_section/weekly_open_close 标签 = "下周一买、当周周五卖"，
+        # 信号日至出场最长约 8 个交易日(如周二信号→下周一入场4日→周五出场4日)，
+        # 故放大到 11 个交易日留足缓冲。
+        if label_mode in ("cross_section", "weekly_open_close"):
+            embargo = max(int(horizon), 11)
+        else:
+            embargo = int(horizon)
         model, metrics = train_model(
-            X, y, epochs=epochs, lr=lr, l2=l2, embargo=horizon, dates=dates_arr,
+            X, y, epochs=epochs, lr=lr, l2=l2, embargo=embargo, dates=dates_arr,
             algorithm=algorithm,
         )
 

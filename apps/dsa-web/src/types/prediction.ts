@@ -224,7 +224,7 @@ export interface BacktestStockItem {
   openPrice: number | null;
   return1dPct: number | null;
   return3dPct: number | null;
-  return5dPct: number | null;
+  returnWkPct: number | null;
   klineJudgment: string;
   klineSecondary: string;
   volumeStatus: string;
@@ -236,10 +236,10 @@ export interface BacktestSummary {
   withData: number;
   avg1dPct: number;
   avg3dPct: number;
-  avg5dPct: number;
+  avgWkPct: number;
   winRate1d: number;
   winRate3d: number;
-  winRate5d: number;
+  winRateWk: number;
   best1dPct: number;
   worst1dPct: number;
 }

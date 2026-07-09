@@ -438,12 +438,25 @@ class StockRepository:
         if not norm_codes:
             return {}
 
+        # 库里 stock_daily_kline.code 存的是带交易所后缀格式(如 600519.SH)，
+        # 而训练/预测传入的 code 多为裸代码(如 600519)。为兼容两种格式，
+        # 查询时同时枚举裸码与其 .SH/.SZ/.BJ 后缀变体。
+        _SUFFIXES = (".SH", ".SZ", ".BJ")
+        query_codes: List[str] = []
+        _seen: set = set()
+        for nc in norm_codes:
+            cands = [nc] if "." in nc else [nc, *(nc + s for s in _SUFFIXES)]
+            for c in cands:
+                if c not in _seen:
+                    _seen.add(c)
+                    query_codes.append(c)
+
         batch_size = max(1, int(batch_size))
         result: Dict[str, pd.DataFrame] = {}
         try:
             with self.db.get_session() as session:
-                for i in range(0, len(norm_codes), batch_size):
-                    batch = norm_codes[i : i + batch_size]
+                for i in range(0, len(query_codes), batch_size):
+                    batch = query_codes[i : i + batch_size]
                     stmt = (
                         select(StockDailyKline)
                         .where(
@@ -474,7 +487,9 @@ class StockRepository:
                     chunk["code"] = chunk["code"].astype(str).str.upper()
                     for code, group in chunk.groupby("code", sort=False):
                         g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
-                        result[str(code).upper()] = g
+                        # 以裸代码为 key，兼容上层 df_cache[裸code] 命中
+                        bare = str(code).split(".")[0].upper()
+                        result[bare] = g
         except Exception as exc:
             logger.error("批量读 kline 失败: %s", exc)
             raise

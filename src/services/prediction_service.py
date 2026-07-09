@@ -137,33 +137,47 @@ def make_weekly_open_close_return(
     open_: pd.Series,
     close: pd.Series,
 ) -> pd.Series:
-    """真实周度交易收益：信号日后下一交易日开盘买，入场周最后交易日收盘卖。
+    """真实周度交易收益：信号日后**下一个周一开盘**买、该周**周五收盘**卖（恒≈5天）。
 
-    ── 本次改动核心：训练标签与实盘买卖价格对齐 ──
-    旧标签 make_forward_return 用 close[t+h]/close[t]−1（收盘到收盘），
-    但实盘是「周一开盘买入、周五收盘卖出」，两者存在系统性偏差：
-      - close-to-close 包含信号日收盘→次日开盘的跳空（不可执行）
-      - open-to-close 才是真实持有期收益
-    本函数统一用于 cross_section / weekly_open_close 标签口径，
-    确保训练目标 = 回测执行口径 = 推荐服务实际可实现的收益。
+    ── 与实盘/推荐口径完全对齐（固定周持有）──
+    推荐服务(StockRankingService.STRATEGY_HINT)执行口径是
+    "每2周·周一开盘买入/期末周五收盘"。本函数把训练标签也钉死成同一窗口：
+      - 信号日 i 的标签 = 信号日**之后第一个周一**开盘(集合竞价)买 →
+        该周一所在 ISO 周的**周五收盘**卖（exit_close / entry_open − 1）。
+      - 每个样本持有期恒为 Mon→Fri（约5个交易日），不再随信号星期几变长变短，
+        消除旧版"次日开买"导致的持有期异构(周四信号仅持1天、周五信号持5天)问题。
+    这样训练目标 = 回测执行口径 = 推荐实际可实现的周波段收益，消除"研究 vs 实盘"裂缝。
+
+    横截面排名：同一信号日 i 的所有票共享同一个"下周一→周五"窗口，组内排名公平。
 
     返回与输入等长的 Series：每个信号日 i 的收益 = exit_close / entry_open − 1；
-    最后一行无后续交易日，返回 NaN。
+    信号日之后已无下一周一（数据末尾）时返回 NaN（自然无标签）。
     """
     d = pd.to_datetime(pd.Series(list(dates)), errors="coerce").reset_index(drop=True)
     op = pd.to_numeric(pd.Series(list(open_)), errors="coerce").reset_index(drop=True)
     cl = pd.to_numeric(pd.Series(list(close)), errors="coerce").reset_index(drop=True)
     out = pd.Series(np.nan, index=range(len(d)), dtype=float)
-    if len(d) < 2:
+    n = len(d)
+    if n < 2:
         return out
 
     iso = d.dt.isocalendar()
     week_key = (iso["year"].astype(int) * 100 + iso["week"].astype(int)).to_numpy()
-    for i in range(len(d) - 1):
-        entry_i = i + 1
+    wd = d.dt.weekday.to_numpy()  # 周一=0
+
+    for i in range(n - 1):
+        # 1) 信号日 i 之后第一个周一（集合竞价买入日；本周一已过时买下周一）
+        entry_i = None
+        for j in range(i + 1, n):
+            if wd[j] == 0:  # 周一
+                entry_i = j
+                break
+        if entry_i is None:
+            continue  # 数据末尾已无下一周一，无法交易
         key = week_key[entry_i]
+        # 2) 该周(周一所在 ISO 周)最后一个交易日 = 周五收盘（遇假顺延到周四）
         exit_i = entry_i
-        while exit_i + 1 < len(d) and week_key[exit_i + 1] == key:
+        while exit_i + 1 < n and week_key[exit_i + 1] == key:
             exit_i += 1
         entry_open = float(op.iloc[entry_i]) if pd.notna(op.iloc[entry_i]) else np.nan
         exit_close = float(cl.iloc[exit_i]) if pd.notna(cl.iloc[exit_i]) else np.nan
