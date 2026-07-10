@@ -51,13 +51,15 @@ class BaiduBackfillService:
 
     dataset = "baidu"
 
-    def __init__(self, db_manager=None, token_provider=None):
+    def __init__(self, db_manager=None, token_provider=None, fetcher=None):
         from src.repositories.stock_repo import StockRepository
 
         self.repo = StockRepository(db_manager)
         # 未显式传入则默认创建一个（浏览器懒启动，仅在首次请求时拉起）
         self._token_provider = token_provider or _default_token_provider()
         self._owns_provider = token_provider is None
+        # 注入的 fetcher（如 BaiduBrowserFetcher）优先；否则走默认 BaiduFetcher
+        self._fetcher = fetcher
         self._ingest = None
 
     @property
@@ -66,16 +68,23 @@ class BaiduBackfillService:
             from src.ingest.baidu_kline import BaiduKlineIngestor
 
             self._ingest = BaiduKlineIngestor(
-                db_manager=self.repo.db, token_provider=self._token_provider
+                db_manager=self.repo.db,
+                token_provider=self._token_provider,
+                fetcher=self._fetcher,
             )
         return self._ingest
 
     def close(self) -> None:
-        """释放 token_provider 持有的浏览器资源（仅当由本服务内部创建时）。
+        """释放 fetcher / token_provider 持有的浏览器资源。
 
-        不清空 ``_token_provider`` 引用：provider 对象在下次 ``get_token()`` 时会
-        按需重新拉起浏览器，从而支持服务被多次 ``run()`` 复用。
+        不清空引用：fetcher / provider 对象在下次调用时会按需重新拉起浏览器，
+        从而支持服务被多次 ``run()`` 复用。
         """
+        if self._ingest is not None:
+            try:
+                self._ingest.close()
+            except Exception:  # noqa: BLE001
+                pass
         if self._owns_provider and self._token_provider is not None:
             try:
                 self._token_provider.close()

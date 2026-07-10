@@ -28,8 +28,10 @@ logger = logging.getLogger(__name__)
 
 # 个股页（加载后会注入 window.paris_2108）
 _DEFAULT_PAGE = "https://finance.baidu.com/stock/ab-600519"
-# token 默认有效期按保守的 10 分钟缓存；实际观察可更长，但刷新成本低，宁早勿晚
-_DEFAULT_TTL = 600
+# acs-token 是「一次性 / 与会话绑定」的：同一 token 跨请求复用会被风控 403。
+# 故默认不缓存（TTL=0），每次取数都重新签名一个新 token——刷新成本低（页面内本地计算），
+# 但能避免「首只成功、其余复用 403」的问题。浏览器驱动的 BaiduBrowserFetcher 在页面内现签现用，天然规避。
+_DEFAULT_TTL = 0
 
 # 在页面上下文内拿 token：getAcsInstance 回 (err, instance)，instance.getSign 回 (err, token)
 _JS_GET_TOKEN = """

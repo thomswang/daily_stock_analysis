@@ -34,12 +34,14 @@ class BaiduKlineIngestor:
         db_manager: Optional[DatabaseManager] = None,
         ktype: str = "1",
         token_provider=None,
+        fetcher=None,
     ):
         self._manager = manager
         self._db = db_manager
         self._ktype = ktype
         self._token_provider = token_provider
-        self._fetcher = None
+        # 允许注入自定义 fetcher（如 BaiduBrowserFetcher）；否则懒创建默认 BaiduFetcher
+        self._fetcher = fetcher
 
     @property
     def fetcher(self):
@@ -50,7 +52,12 @@ class BaiduKlineIngestor:
         return self._fetcher
 
     def close(self) -> None:
-        """释放 token_provider 持有的浏览器资源（如由本 ingestor 创建）。"""
+        """释放 fetcher / token_provider 持有的浏览器资源。"""
+        if self._fetcher is not None and hasattr(self._fetcher, "close"):
+            try:
+                self._fetcher.close()
+            except Exception:  # noqa: BLE001
+                pass
         if self._token_provider is not None:
             try:
                 self._token_provider.close()

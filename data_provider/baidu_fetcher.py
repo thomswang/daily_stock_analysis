@@ -65,6 +65,52 @@ _USER_AGENT = (
 )
 
 
+def build_baidu_params(
+    code: str,
+    start_time: str,
+    end_time: Optional[str] = None,
+    ktype: str = "1",
+    full: bool = True,
+    *,
+    market_type: str = "ab",
+    name: str = "",
+) -> Dict[str, str]:
+    """构造百度 getquotation 查询参数（模块级，供 BaiduFetcher 与浏览器驱动抓取共用）。
+
+    旧 ktype("1") 映射为 vapi 的 "day"。百度 query/code 仅接受纯数字代码
+    （市场由 market_type 区分），去后缀避免 .SZ/.SH/.BJ 被拒。
+    百度接口实测忽略 start_time/end_time，区间裁剪依赖本地 _filter_by_range。
+    """
+    api_ktype = _KTYPE_MAP.get(ktype, ktype)
+    bare = normalize_stock_code(code)
+    params: Dict[str, str] = {
+        "srcid": "5353",
+        "pointType": "string",
+        "group": "quotation_kline_ab",
+        "query": bare,
+        "code": bare,
+        "market_type": market_type,
+        "newFormat": "1",
+        "is_kc": "0",
+        "ktype": api_ktype,
+        "finClientType": "pc",
+        "chartType": "kline",
+        "stock_type": market_type,
+        "financeType": "stock",
+    }
+    if full:
+        params["all"] = "1"
+    if name:
+        params["name"] = name
+    start_ts = _to_unix_ts(start_time)
+    if start_ts:
+        params["start_time"] = start_ts
+    end_ts = _to_unix_ts(end_time) if end_time else None
+    if end_ts:
+        params["end_time"] = end_ts
+    return params
+
+
 def _to_unix_ts(value: Optional[str]) -> Optional[str]:
     """百度接口的 end_time/start_time 需要 Unix 时间戳（秒）。
 
@@ -273,43 +319,10 @@ class BaiduFetcher(BaseFetcher):
         ktype: str = "1",
         full: bool = True,
     ) -> Dict[str, str]:
-        # 旧 ktype("1") 映射为 vapi 的 "day"
-        api_ktype = _KTYPE_MAP.get(ktype, ktype)
-        # 百度 query/code 仅接受纯数字代码（市场由 market_type 区分），
-        # 去后缀避免 .SZ/.SH/.BJ 被百度拒绝（实测带后缀直接 403/failed）。
-        bare = normalize_stock_code(code)
-        params = {
-            "srcid": "5353",
-            "pointType": "string",
-            "group": "quotation_kline_ab",
-            "query": bare,
-            "code": bare,
-            "market_type": self._market_type,
-            "newFormat": "1",
-            "is_kc": "0",
-            "ktype": api_ktype,
-            "finClientType": "pc",
-            # full=True：带 all=1 返回整段历史（茅台可回 2001 上市），用于首次/补齐深历史。
-            # full=False：不带 all=1，接口只返回最近约 2000 行「尾窗口」
-            #   （老票≈2018 起；新股=上市日起，因其整段不足 2000 行），
-            #   用于本地已存有深历史、只需刷新近期数据的场景，显著减少传输量。
-            # 注意：百度接口实测忽略 start_time/end_time，区间裁剪完全依赖本地 _filter_by_range。
-            "chartType": "kline",
-            "stock_type": self._market_type,
-            "financeType": "stock",
-        }
-        if full:
-            params["all"] = "1"
-        # name 为展示字段，百度按 code 查询；未提供则不发送，避免空值干扰
-        if self._name:
-            params["name"] = self._name
-        start_ts = _to_unix_ts(start_time)
-        if start_ts:
-            params["start_time"] = start_ts
-        end_ts = _to_unix_ts(end_time) if end_time else None
-        if end_ts:
-            params["end_time"] = end_ts
-        return params
+        return build_baidu_params(
+            code, start_time, end_time, ktype, full,
+            market_type=self._market_type, name=self._name,
+        )
 
     def _build_headers(self) -> Dict[str, str]:
         token = self._resolve_token()

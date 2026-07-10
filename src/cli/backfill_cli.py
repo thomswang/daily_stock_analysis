@@ -188,7 +188,16 @@ def run_baidu(args: argparse.Namespace) -> dict:
     # 统一归一化为 6 位纯数字，与 westock-ohlcv 等同表数据源的 code 口径保持一致。
     codes = [normalize_stock_code(c) for c in codes]
     logger.info("准备 baidu 回填：%d 只股票", len(codes))
-    return BaiduBackfillService().run(
+
+    # 浏览器驱动模式：复用本机已登录 Chrome 在页面内抓取，规避无头/匿名风控 403
+    fetcher = None
+    if getattr(args, "browser", False):
+        from data_provider.baidu_browser import BaiduBrowserFetcher
+
+        fetcher = BaiduBrowserFetcher()
+        logger.info("baidu 使用浏览器驱动模式（本机 Chrome 登录态）")
+
+    return BaiduBackfillService(fetcher=fetcher).run(
         codes,
         start_date=args.start,
         end_date=args.end,
@@ -341,6 +350,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-full", action="store_true",
         help="尾窗口模式：百度不带 all=1，仅拉最近约 2000 行（老票≈2018 起，新股=上市日起）。"
              "默认 auto（本地无数据或需补齐深历史时自动全量）。与 --mode 无关。",
+    )
+    baidu.add_argument(
+        "--browser", action="store_true",
+        help="浏览器驱动模式：用系统真实 Chrome（有头）在个股页内签新鲜 acs-token，"
+             "并以 page.request.get 原始请求拉取（等价于 DevTools 的 Copy as cURL）。"
+             "百度仅接受「有头真实 Chrome 会话」签出的 token，且拒绝页面内 fetch（会 302 到"
+             "HTML 拦截页），故必须如此；全程复用同一 Chrome 窗口，无需登录、无需读 cookie。"
+             "前提是本机已装 Chrome（Playwright 以 channel='chrome' 自动定位）。",
     )
 
     westock_ohlcv = sub.add_parser(

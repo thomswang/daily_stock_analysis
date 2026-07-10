@@ -198,9 +198,10 @@ def run_backfill_job(
 
 
         if i % max(log_every, 1) == 0 or i == total:
+            reason = f" | 原因: {fail_text}" if (action == "failed" and fail_text) else ""
             logger.info(
-                "[%d/%d] %s → %s | 已拉 %d 跳过 %d 失败 %d 空 %d 新增行 %d",
-                i, total, code, action,
+                "[%d/%d] %s → %s%s | 已拉 %d 跳过 %d 失败 %d 空 %d 新增行 %d",
+                i, total, code, action, reason,
                 stats["fetched"], stats["skipped"], stats["failed"],
                 stats["empty"], stats["rows_added"],
             )
