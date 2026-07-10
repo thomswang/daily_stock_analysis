@@ -162,7 +162,51 @@ const TEXT = {
 
 type Lang = (typeof TEXT)[keyof typeof TEXT];
 
-const SCORE_COLOR = '#6366f1';
+// ============== Strength score visualizer ==============
+
+/**
+ * 极简强弱分：条形长度归一化到当前榜单（主视觉信号）+ 冷暖双色（强=暖红，弱=冷绿）。
+ *
+ * 设计原则：
+ *   - 条形长度 = 相对强弱，一眼可比
+ *   - 颜色：高分离度冷暖映射，0.55~0.70 区间也能明显区分
+ *   - 去掉徽章底色，数字干净利落
+ */
+const ScoreCell: React.FC<{ score: number; min: number; max: number }> = ({ score, min, max }) => {
+  const span = max - min || 1;
+  // 归一化到 [8%, 100%]，保证最低分也有一小段可见
+  const pct = Math.max(8, ((score - min) / span) * 100);
+
+  // 冷暖映射：score ∈ [min,max] → t ∈ [0,1]
+  // t=0(最弱) → 青冷色 hsl(175, 72%, 48%)  类似 Teal
+  // t=1(最强) → 暖玫色 hsl(355, 82%, 60%)  类似 Rose
+  const t = Math.min(1, Math.max(0, (score - min) / span));
+  const h = 175 + (355 - 175) * t;       // 175 → 355 (跨过 360° 无缝)
+  const sat = 72 + (82 - 72) * t;
+  const light = 48 + (60 - 48) * t;
+  const color = `hsl(${h}, ${sat}%, ${light}%)`;
+  const colorLight = `hsl(${h}, ${sat}%, ${light + 14}%)`;
+
+  return (
+    <div className="flex flex-col items-center gap-1.5">
+      {/* 干净数值 */}
+      <span className="font-mono text-[13px] font-semibold tabular-nums leading-none" style={{ color }}>
+        {score.toFixed(3)}
+      </span>
+      {/* 细长条 — 长度即强弱 */}
+      <div className="relative h-1 w-full overflow-hidden rounded-full bg-white/[0.06]">
+        <div
+          className="absolute inset-y-0 left-0 rounded-full transition-all"
+          style={{
+            width: `${pct}%`,
+            background: `linear-gradient(90deg, ${color}, ${colorLight})`,
+            boxShadow: t > 0.7 ? `0 0 6px ${color}40` : 'none',
+          }}
+        />
+      </div>
+    </div>
+  );
+};
 
 function pct(value: number | null | undefined, digits = 1): string {
   if (value == null || Number.isNaN(value)) return '--';
@@ -280,13 +324,19 @@ const CombinedTable: React.FC<{
   live: WeeklyLiveItem[];
   window: WeeklyTradeWindow;
   text: Lang;
-  scoreWidth: (s: number) => number;
-}> = ({ items, live, window, text, scoreWidth }) => {
+}> = ({ items, live, window, text }) => {
   const liveByCode = useMemo(() => {
     const m = new Map<string, WeeklyLiveItem>();
     for (const l of live) m.set(l.code.toUpperCase(), l);
     return m;
   }, [live]);
+
+  // 归一化条形长度到当前榜单，让强弱差异一目了然。
+  const [sMin, sMax] = useMemo(() => {
+    if (!items.length) return [0, 1];
+    const scores = items.map((i) => i.strengthScore);
+    return [Math.min(...scores), Math.max(...scores)];
+  }, [items]);
 
   // 最新价列头按交易窗口状态区分含义，避免「最新价」被误解为实时报价。
   const lastColLabel =
@@ -336,15 +386,7 @@ const CombinedTable: React.FC<{
                   {it.industry ? <Badge variant="default">{it.industry}</Badge> : <span className="text-xs text-secondary-text">--</span>}
                 </td>
                 <td className="px-2 py-2.5 text-center align-middle">
-                  <div className="flex items-center justify-center gap-2">
-                    <div className="relative h-2 w-24 overflow-hidden rounded-full bg-elevated/60">
-                      <div
-                        className="absolute left-0 top-0 h-full rounded-full"
-                        style={{ width: `${scoreWidth(it.strengthScore)}%`, background: SCORE_COLOR, opacity: 0.8 }}
-                      />
-                    </div>
-                    <span className="font-mono text-xs text-foreground">{it.strengthScore.toFixed(3)}</span>
-                  </div>
+                  <ScoreCell score={it.strengthScore} min={sMin} max={sMax} />
                 </td>
                 <td className="px-2 py-2.5 text-center align-middle">
                   <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-[hsl(var(--primary))]">
@@ -440,20 +482,6 @@ const RecommendationsPage: React.FC = () => {
   useEffect(() => {
     void fetchBoard();
   }, [fetchBoard]);
-
-  const maxScore = useMemo(() => {
-    if (!data?.items?.length) return 1;
-    return Math.max(...data.items.map((i) => i.strengthScore), 0.0001);
-  }, [data]);
-  const minScore = useMemo(() => {
-    if (!data?.items?.length) return 0;
-    return Math.min(...data.items.map((i) => i.strengthScore), 0);
-  }, [data]);
-
-  const scoreWidth = (score: number): number => {
-    const span = maxScore - minScore || 1;
-    return 25 + ((score - minScore) / span) * 75; // keep a visible minimum bar
-  };
 
   const liveSummary = data?.liveSummary;
 
@@ -610,7 +638,6 @@ const RecommendationsPage: React.FC = () => {
               live={data.live}
               window={data.tradeWindow}
               text={text}
-              scoreWidth={scoreWidth}
             />
           </Card>
 
