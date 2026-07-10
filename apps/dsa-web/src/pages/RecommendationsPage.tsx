@@ -54,8 +54,11 @@ const TEXT = {
     colScore: '强弱分',
     colWeight: '建议权重',
     colBuySell: '买入 → 卖出',
-    colBuy: '买入价',
+    colBuy: '买入价（周一开）',
     colLast: '最新价',
+    colLastPending: '最新价（待买入）',
+    colLastHolding: '最新价（截至今天）',
+    colLastSettled: '卖出价（周五收）',
     colR1: '1日',
     colR3: '3日',
     colR5: '当周',
@@ -119,8 +122,11 @@ const TEXT = {
     colScore: 'Strength',
     colWeight: 'Weight',
     colBuySell: 'Buy → Sell',
-    colBuy: 'Buy',
+    colBuy: 'Buy (Mon open)',
     colLast: 'Last',
+    colLastPending: 'Last (pending)',
+    colLastHolding: 'Last (as of today)',
+    colLastSettled: 'Sell (Fri close)',
     colR1: '1D',
     colR3: '3D',
     colR5: 'Wk',
@@ -282,23 +288,31 @@ const CombinedTable: React.FC<{
     return m;
   }, [live]);
 
+  // 最新价列头按交易窗口状态区分含义，避免「最新价」被误解为实时报价。
+  const lastColLabel =
+    window.status === 'pending'
+      ? text.colLastPending
+      : window.isSettled
+        ? text.colLastSettled
+        : text.colLastHolding;
+
   return (
     <div className="overflow-x-auto rounded-xl border border-border/40">
       <table className="w-full text-sm">
         <thead>
-          <tr className="border-b border-border/60 bg-elevated/40 text-left text-xs uppercase tracking-wider text-secondary-text">
-            <th className="w-10 py-2.5 pl-3 pr-2 text-center">{text.colRank}</th>
-            <th className="py-2.5 pr-3">{text.colName}</th>
-            <th className="py-2.5 pr-3">{text.colIndustry}</th>
-            <th className="py-2.5 pr-3">{text.colScore}</th>
-            <th className="py-2.5 pr-3 text-right">{text.colWeight}</th>
-            <th className="py-2.5 pr-3 text-center">{text.colBuySell}</th>
-            <th className="py-2.5 pr-2 text-right">{text.colBuy}</th>
-            <th className="py-2.5 pr-2 text-right">{text.colLast}</th>
-            <th className="py-2.5 pr-2 text-right">{text.colR1}</th>
-            <th className="py-2.5 pr-2 text-right">{text.colR3}</th>
-            <th className="py-2.5 pr-2 text-right">{text.colR5}</th>
-            <th className="py-2.5 pr-3 text-center">{text.colStatus}</th>
+          <tr className="border-b border-border/60 bg-elevated/40 text-center text-xs uppercase tracking-wider text-secondary-text">
+            <th className="w-10 px-2 py-2.5">{text.colRank}</th>
+            <th className="px-2 py-2.5">{text.colName}</th>
+            <th className="px-2 py-2.5">{text.colIndustry}</th>
+            <th className="px-2 py-2.5">{text.colScore}</th>
+            <th className="px-2 py-2.5">{text.colWeight}</th>
+            <th className="px-2 py-2.5">{text.colBuySell}</th>
+            <th className="px-2 py-2.5">{text.colBuy}</th>
+            <th className="px-2 py-2.5">{lastColLabel}</th>
+            <th className="px-2 py-2.5">{text.colR1}</th>
+            <th className="px-2 py-2.5">{text.colR3}</th>
+            <th className="px-2 py-2.5">{text.colR5}</th>
+            <th className="px-2 py-2.5">{text.colStatus}</th>
           </tr>
         </thead>
         <tbody>
@@ -309,20 +323,20 @@ const CombinedTable: React.FC<{
             const lastPrice = lv?.lastPrice != null ? lv.lastPrice : it.lastClose;
             return (
               <tr key={it.code} className="border-b border-border/20 transition-colors hover:bg-elevated/30">
-                <td className="py-2.5 pl-3 pr-2 text-center align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   <RankMedal rank={it.rank} />
                 </td>
-                <td className="py-2.5 pr-3 align-middle">
-                  <div className="flex flex-col">
+                <td className="px-2 py-2.5 text-center align-middle">
+                  <div className="flex flex-col items-center">
                     <span className="font-medium text-foreground">{it.stockName || it.code}</span>
                     <span className="font-mono text-[11px] text-secondary-text">{it.code}</span>
                   </div>
                 </td>
-                <td className="py-2.5 pr-3 align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   {it.industry ? <Badge variant="default">{it.industry}</Badge> : <span className="text-xs text-secondary-text">--</span>}
                 </td>
-                <td className="py-2.5 pr-3 align-middle">
-                  <div className="flex items-center gap-2">
+                <td className="px-2 py-2.5 text-center align-middle">
+                  <div className="flex items-center justify-center gap-2">
                     <div className="relative h-2 w-24 overflow-hidden rounded-full bg-elevated/60">
                       <div
                         className="absolute left-0 top-0 h-full rounded-full"
@@ -332,37 +346,37 @@ const CombinedTable: React.FC<{
                     <span className="font-mono text-xs text-foreground">{it.strengthScore.toFixed(3)}</span>
                   </div>
                 </td>
-                <td className="py-2.5 pr-3 text-right align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-[hsl(var(--primary))]">
                     <TrendingUp className="h-3 w-3" />
                     {pct(it.suggestedWeight)}
                   </span>
                 </td>
-                <td className="py-2.5 pr-3 text-center align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   <span className="font-mono text-[11px] text-secondary-text">
                     {window.buyDate.slice(5)} → {window.sellDate.slice(5)}
                   </span>
                 </td>
-                <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-secondary-text tabular-nums">
+                <td className="px-2 py-2.5 text-center align-middle font-mono text-xs text-secondary-text tabular-nums">
                   {pending && !lv?.available
                     ? '待买入'
                     : lv?.buyPrice != null
                       ? lv.buyPrice.toFixed(2)
                       : '--'}
                 </td>
-                <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-foreground tabular-nums">
-                  {lastPrice != null ? lastPrice.toFixed(2) : '--'}
+                <td className="px-2 py-2.5 text-center align-middle font-mono text-xs text-foreground tabular-nums">
+                  {pending && !lv?.available ? '待买入' : lastPrice != null ? lastPrice.toFixed(2) : '--'}
                 </td>
-                <td className="py-2.5 pr-2 text-right align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   <ReturnCell value={lv?.return1dPct} pending={pending && !lv?.available} />
                 </td>
-                <td className="py-2.5 pr-2 text-right align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   <ReturnCell value={lv?.return3dPct} pending={pending && !lv?.available} />
                 </td>
-                <td className="py-2.5 pr-2 text-right align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   <ReturnCell value={lv?.returnWkPct} pending={pending && !lv?.available} />
                 </td>
-                <td className="py-2.5 pr-3 text-center align-middle">
+                <td className="px-2 py-2.5 text-center align-middle">
                   {lv ? <StatusBadge live={lv} window={window} text={text} /> : <span className="text-xs text-secondary-text">--</span>}
                 </td>
               </tr>
@@ -444,7 +458,7 @@ const RecommendationsPage: React.FC = () => {
   const liveSummary = data?.liveSummary;
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-3 py-4 sm:px-4">
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-5 px-3 py-4 sm:px-4">
       <PageHeader eyebrow={text.eyebrow} title={text.title} description={text.description} />
 
       {/* Controls */}
