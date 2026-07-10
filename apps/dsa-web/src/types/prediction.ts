@@ -276,12 +276,14 @@ export interface WeeklyLiveItem {
 export interface WeeklyTradeWindow {
   buyDate: string;
   sellDate: string;
-  status: 'buy_today' | 'holding' | 'pending';
+  status: 'buy_today' | 'holding' | 'settled' | 'pending';
   statusLabel: string;
   nextBuyDate: string;
   daysSinceBuy: number;
   daysToSell: number;
   isBuyReached: boolean;
+  isSettled: boolean;
+  asOfDate: string | null;
 }
 
 export interface WeeklyLiveSummary {

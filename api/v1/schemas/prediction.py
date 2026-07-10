@@ -308,12 +308,14 @@ class WeeklyTradeWindow(BaseModel):
 
     buy_date: str = Field(..., description="买入日(周一) YYYY-MM-DD")
     sell_date: str = Field(..., description="卖出日(当周周五) YYYY-MM-DD")
-    status: str = Field(..., description="buy_today(周一买入)/holding(持有中)/pending(待买入)")
+    status: str = Field(..., description="buy_today(预测周周一买入)/holding(持有中·实时)/settled(预测周已收盘·已结算)/pending(待买入)")
     status_label: str = Field(..., description="状态中文标签")
     next_buy_date: str = Field(..., description="下一次买入日(下周一) YYYY-MM-DD")
-    days_since_buy: int = Field(..., description="距买入日天数")
-    days_to_sell: int = Field(..., description="距卖出日天数")
-    is_buy_reached: bool = Field(..., description="买入日是否已到(决定能否取实时收益)")
+    days_since_buy: int = Field(..., description="距预测买入日天数")
+    days_to_sell: int = Field(..., description="距预测卖出日天数(已结算为负)")
+    is_buy_reached: bool = Field(..., description="预测买入日是否已到(决定能否取收益)")
+    is_settled: bool = Field(..., description="预测周是否已收盘(收益为当周实际值，非实时)")
+    as_of_date: Optional[str] = Field(None, description="预测快照日期(决定预测周，非实时拉取日)")
 
 
 class WeeklyLiveSummary(BaseModel):

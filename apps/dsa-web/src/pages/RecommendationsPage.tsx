@@ -69,7 +69,12 @@ const TEXT = {
     windowHolding: '持有中',
     windowBuyToday: '本周一买入',
     windowHintLive: '实时行情',
-    windowHintPending: '买入日未到，暂无实时收益（买入后自动更新）',
+    windowHintPending: '预测买入日未到，暂无收益（买入后自动更新）',
+    windowSettled: '已结算',
+    windowHintSettled: '预测周已收盘，以下为当周实际收益（非实时回测）',
+    windowPredictedBuy: '预测买入时间',
+    windowAsOf: '数据快照',
+    liveTitleSettled: '当周收益概览（已结算）',
     // Live summary
     liveTitle: '实时收益概览（腾讯行情）',
     liveAvg1: '平均1日',
@@ -127,7 +132,12 @@ const TEXT = {
     windowHolding: 'Holding',
     windowBuyToday: 'Bought Mon',
     windowHintLive: 'Live quotes',
-    windowHintPending: 'Buy date not reached yet — no live returns (auto-updates after buy)',
+    windowHintPending: 'Buy date not reached yet — no returns (auto-updates after buy)',
+    windowSettled: 'Settled',
+    windowHintSettled: 'Prediction week closed — actual returns for that week (not live)',
+    windowPredictedBuy: 'Predicted buy time',
+    windowAsOf: 'Snapshot',
+    liveTitleSettled: 'Week returns overview (settled)',
     liveTitle: 'Live returns overview (Tencent)',
     liveAvg1: 'Avg 1D',
     liveAvg3: 'Avg 3D',
@@ -184,7 +194,11 @@ const StatusBadge: React.FC<{ live: WeeklyLiveItem; window: WeeklyTradeWindow; t
     return <Badge variant="warning">{text.statusPending}</Badge>;
   }
   if (live.available) {
-    return <Badge variant="success">{text.statusLive}</Badge>;
+    return window.isSettled ? (
+      <Badge variant="info">{text.windowSettled}</Badge>
+    ) : (
+      <Badge variant="success">{text.statusLive}</Badge>
+    );
   }
   return <Badge variant="default">{text.statusMissing}</Badge>;
 };
@@ -193,20 +207,46 @@ const StatusBadge: React.FC<{ live: WeeklyLiveItem; window: WeeklyTradeWindow; t
 
 const TradeWindowBanner: React.FC<{ window: WeeklyTradeWindow; text: Lang }> = ({ window, text }) => {
   const pending = window.status === 'pending';
-  const accent = pending ? 'border-amber-500/30 bg-amber-500/5' : 'border-emerald-500/30 bg-emerald-500/5';
-  const statusText =
-    window.status === 'pending' ? text.windowPending : window.status === 'buy_today' ? text.windowBuyToday : text.windowHolding;
-  const statusColor = pending ? 'text-amber-400' : 'text-emerald-400';
+  const settled = window.status === 'settled';
+  const accent = pending
+    ? 'border-amber-500/30 bg-amber-500/5'
+    : settled
+      ? 'border-cyan/30 bg-cyan/5'
+      : 'border-emerald-500/30 bg-emerald-500/5';
+  const statusColor = pending ? 'text-amber-400' : settled ? 'text-cyan' : 'text-emerald-400';
+  const statusText = pending
+    ? text.windowPending
+    : settled
+      ? text.windowSettled
+      : window.status === 'buy_today'
+        ? text.windowBuyToday
+        : text.windowHolding;
+  const badgeVariant = pending ? 'warning' : settled ? 'info' : 'success';
+  const hint = pending ? text.windowHintPending : settled ? text.windowHintSettled : text.windowHintLive;
   return (
     <div className={`flex flex-col gap-3 rounded-2xl border px-4 py-3 ${accent}`}>
       <div className="flex flex-wrap items-center gap-2">
         <CalendarClock className={`h-4 w-4 ${statusColor}`} />
         <span className="text-sm font-semibold text-foreground">{text.windowTitle}</span>
-        <Badge variant={pending ? 'warning' : 'success'}>{statusText}</Badge>
-        <span className="ml-auto text-[11px] text-secondary-text">
-          {pending ? text.windowHintPending : text.windowHintLive}
-        </span>
+        <Badge variant={badgeVariant}>{statusText}</Badge>
+        <span className="ml-auto text-[11px] text-secondary-text">{hint}</span>
       </div>
+
+      {/* 醒目：预测买入时间（锚定到预测周，而非请求当天） */}
+      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/40 bg-elevated/40 px-3 py-2">
+        <span className="rounded-md bg-cyan/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-cyan">
+          {text.windowPredictedBuy}
+        </span>
+        <span className="font-mono text-sm font-semibold" style={{ color: statusColor }}>
+          {window.buyDate} 开盘 → {window.sellDate} 收盘
+        </span>
+        {window.asOfDate ? (
+          <span className="ml-auto text-[11px] text-secondary-text">
+            {text.windowAsOf}：{window.asOfDate}
+          </span>
+        ) : null}
+      </div>
+
       <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <div className="flex flex-col">
           <span className="text-[11px] uppercase tracking-wider text-secondary-text">{text.windowBuy}</span>
@@ -500,7 +540,7 @@ const RecommendationsPage: React.FC = () => {
               <StatCard label={text.liveAvg1} value={<span className={liveSummary.avg1dPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(liveSummary.avg1dPct > 0 ? '+' : '') + liveSummary.avg1dPct.toFixed(2) + '%'}</span>} hint={`${text.liveWin1} ${(liveSummary.winRate1d * 100).toFixed(0)}%`} />
               <StatCard label={text.liveAvg3} value={<span className={liveSummary.avg3dPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(liveSummary.avg3dPct > 0 ? '+' : '') + liveSummary.avg3dPct.toFixed(2) + '%'}</span>} hint={`${text.liveWin3} ${(liveSummary.winRate3d * 100).toFixed(0)}%`} />
               <StatCard label={text.liveAvg5} value={<span className={liveSummary.avgWkPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(liveSummary.avgWkPct > 0 ? '+' : '') + liveSummary.avgWkPct.toFixed(2) + '%'}</span>} hint={`${text.liveWin5} ${(liveSummary.winRateWk * 100).toFixed(0)}%`} />
-              <StatCard tone="primary" label={text.liveTitle} value={liveSummary.withData} hint={`${text.picked} ${liveSummary.total}`} />
+              <StatCard tone="primary" label={data.tradeWindow.isSettled ? text.liveTitleSettled : text.liveTitle} value={liveSummary.withData} hint={`${text.picked} ${liveSummary.total}`} />
             </div>
           ) : null}
 
