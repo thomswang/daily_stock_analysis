@@ -16,6 +16,7 @@ import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type {
   IndustryOption,
   RecommendationItem,
+  SnapshotRun,
   WeeklyLiveItem,
   WeeklyRecommendationResponse,
   WeeklyTradeWindow,
@@ -32,8 +33,10 @@ const TEXT = {
     scope: '范围',
     allMarket: '全市场',
     topN: '选取数量',
-    industryCap: '每行业上限',
-    noCap: '不限制',
+    snapshot: '快照',
+    model: '模型',
+    generatedAt: '生成时间',
+    latestTag: '最新',
     refresh: '刷新榜单',
     loading: '读取中…',
     emptyTitle: '暂无榜单',
@@ -45,7 +48,6 @@ const TEXT = {
     strategyTitle: '推荐交易口径（回测最优）',
     rebalanceLabel: '调仓',
     weightingLabel: '权重',
-    capLabel: '行业分散',
     backtestLabel: '回测',
     listHint: '强弱分为横截面相对排序（越高越强）；建议权重为等权（清单内∑=100%）。收益为腾讯实时行情，周一开盘买入、当周周五卖出。',
     colRank: '#',
@@ -100,8 +102,10 @@ const TEXT = {
     scope: 'Scope',
     allMarket: 'Whole market',
     topN: 'Top N',
-    industryCap: 'Per-industry cap',
-    noCap: 'No cap',
+    snapshot: 'Snapshot',
+    model: 'Model',
+    generatedAt: 'Generated',
+    latestTag: 'latest',
     refresh: 'Refresh',
     loading: 'Loading…',
     emptyTitle: 'No board yet',
@@ -113,7 +117,6 @@ const TEXT = {
     strategyTitle: 'Recommended playbook (backtest-optimal)',
     rebalanceLabel: 'Rebalance',
     weightingLabel: 'Weighting',
-    capLabel: 'Diversify',
     backtestLabel: 'Backtest',
     listHint: 'Strength is a cross-sectional relative rank (higher = stronger); suggested weight is equal-weight (sums to 100%). Returns are live Tencent quotes: buy Monday open, sell Friday close.',
     colRank: '#',
@@ -434,9 +437,10 @@ const RecommendationsPage: React.FC = () => {
   const { language } = useUiLanguage();
   const text = TEXT[language];
 
+  const [runId, setRunId] = useState<number | null>(null);
+  const [runs, setRuns] = useState<SnapshotRun[]>([]);
   const [industry, setIndustry] = useState<string>('');
   const [topN, setTopN] = useState(20);
-  const [industryCap, setIndustryCap] = useState<number | null>(3);
   const [industries, setIndustries] = useState<IndustryOption[]>([]);
   const [data, setData] = useState<WeeklyRecommendationResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -446,10 +450,27 @@ const RecommendationsPage: React.FC = () => {
     document.title = text.documentTitle;
   }, [text.documentTitle]);
 
+  // 载入历史快照 run 列表（供「快照选择」下拉，可回溯不同模型/时间）
   useEffect(() => {
     let active = true;
     predictionApi
-      .industries()
+      .recommendationRuns(50)
+      .then((res) => {
+        if (active) setRuns(res.runs ?? []);
+      })
+      .catch(() => {
+        if (active) setRuns([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // run 变化时刷新行业下拉（行业清单是按 run 的）
+  useEffect(() => {
+    let active = true;
+    predictionApi
+      .industries(runId)
       .then((res) => {
         if (active) setIndustries(res.industries ?? []);
       })
@@ -459,16 +480,16 @@ const RecommendationsPage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [runId]);
 
   const fetchBoard = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
       const res = await predictionApi.recommendationsWeekly({
+        runId,
         industry: industry || undefined,
         topN,
-        industryCap: industry ? null : industryCap,
       });
       setData(res);
     } catch (err) {
@@ -477,7 +498,7 @@ const RecommendationsPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [industry, topN, industryCap]);
+  }, [runId, industry, topN]);
 
   useEffect(() => {
     void fetchBoard();
@@ -492,6 +513,25 @@ const RecommendationsPage: React.FC = () => {
       {/* Controls */}
       <Card padding="md">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+          <div className="min-w-0 flex-1">
+            <label className="mb-1.5 block text-xs uppercase tracking-[0.22em] text-secondary-text">
+              {text.snapshot}
+            </label>
+            <select
+              value={runId ?? ''}
+              onChange={(e) => setRunId(e.target.value === '' ? null : Number(e.target.value))}
+              disabled={isLoading || runs.length === 0}
+              className="input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-3 text-sm disabled:opacity-50"
+            >
+              <option value="">{text.latestTag}</option>
+              {runs.map((r, idx) => (
+                <option key={r.runId} value={r.runId}>
+                  #{r.runId} · M{r.modelId} · {r.modelName}@{r.modelVersion} · {r.generatedAt}
+                  {idx === 0 ? `（${text.latestTag}）` : ''}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="min-w-0 flex-1">
             <label className="mb-1.5 block text-xs uppercase tracking-[0.22em] text-secondary-text">
               {text.scope}
@@ -520,25 +560,9 @@ const RecommendationsPage: React.FC = () => {
               disabled={isLoading}
               className="input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-3 text-sm lg:w-28"
             >
-              {[10, 20, 30, 50].map((n) => (
+              {[10, 20].map((n) => (
                 <option key={n} value={n}>{n}</option>
               ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1.5 block text-xs uppercase tracking-[0.22em] text-secondary-text">
-              {text.industryCap}
-            </label>
-            <select
-              value={industryCap ?? 'none'}
-              onChange={(e) => setIndustryCap(e.target.value === 'none' ? null : Number(e.target.value))}
-              disabled={isLoading || Boolean(industry)}
-              className="input-surface input-focus-glow h-11 w-full rounded-xl border bg-transparent px-3 text-sm lg:w-32 disabled:opacity-50"
-            >
-              {[2, 3, 5].map((n) => (
-                <option key={n} value={n}>≤ {n}</option>
-              ))}
-              <option value="none">{text.noCap}</option>
             </select>
           </div>
           <Button
@@ -583,6 +607,14 @@ const RecommendationsPage: React.FC = () => {
             />
           </div>
 
+          {/* 当前快照来源（模型 + 生成时间），用于回溯 */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-border/60 bg-card/40 px-4 py-2 text-xs text-secondary-text">
+            <span className="font-medium text-foreground">{text.snapshot} #{data.runId}</span>
+            <span>{text.model}：M{data.modelId} · {data.modelName}@{data.modelVersion}</span>
+            <span>{text.generatedAt}：{data.generatedAt ?? '--'}</span>
+            <span>{text.asOf}：{data.asOfDate ?? '--'}</span>
+          </div>
+
           {/* Trade window banner */}
           <TradeWindowBanner window={data.tradeWindow} text={text} />
 
@@ -611,9 +643,6 @@ const RecommendationsPage: React.FC = () => {
                   <div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-secondary-text">
                     <span>{text.rebalanceLabel}：{data.strategy.rebalance}</span>
                     <span>{text.weightingLabel}：{data.strategy.weighting}</span>
-                    {data.strategy.industryCap != null ? (
-                      <span>{text.capLabel}：≤ {data.strategy.industryCap}</span>
-                    ) : null}
                   </div>
                   {data.strategy.backtest ? (
                     <p className="mt-1.5 text-xs text-secondary-text">

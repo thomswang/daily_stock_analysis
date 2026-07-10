@@ -167,6 +167,7 @@ export interface RecommendationItem {
   industry: string | null;
   strengthScore: number;
   rank: number;
+  rankInIndustry?: number | null;
   rankPct: number;
   suggestedWeight: number;
   lastClose: number | null;
@@ -180,7 +181,26 @@ export interface StrategyHint {
   backtest: string | null;
 }
 
+/** 一次强弱打分快照执行（不可变，永不覆盖），供前端「快照选择」下拉。 */
+export interface SnapshotRun {
+  runId: number;
+  modelId?: number | null;
+  modelName: string;
+  modelVersion: string;
+  asOfDate: string | null;
+  generatedAt: string | null;
+  lookbackDays?: number | null;
+  universeSize?: number | null;
+  industryCount?: number | null;
+  note?: string | null;
+}
+
 export interface RecommendationsResponse {
+  runId: number;
+  modelId?: number | null;
+  modelName: string;
+  modelVersion: string;
+  generatedAt: string | null;
   scope: string;
   industry: string | null;
   asOfDate: string | null;
@@ -192,12 +212,18 @@ export interface RecommendationsResponse {
   disclaimer: string;
 }
 
+export interface RecommendationRunsResponse {
+  count: number;
+  runs: SnapshotRun[];
+}
+
 export interface IndustryOption {
   industry: string;
   count: number;
 }
 
 export interface IndustriesResponse {
+  runId: number | null;
   asOfDate: string | null;
   count: number;
   industries: IndustryOption[];
@@ -206,7 +232,7 @@ export interface IndustriesResponse {
 export interface RecommendationsParams {
   industry?: string;
   topN?: number;
-  industryCap?: number | null;
+  runId?: number | null;
 }
 
 // ============ Recommendation backtest (Mon open buy) ============
@@ -245,6 +271,11 @@ export interface BacktestSummary {
 }
 
 export interface RecommendationBacktestResponse {
+  runId: number;
+  modelId?: number | null;
+  modelName: string;
+  modelVersion: string;
+  generatedAt: string | null;
   asOfDate: string | null;
   buyDate: string;
   actualBuyDate: string;
@@ -257,6 +288,7 @@ export interface RecommendationBacktestResponse {
 export interface RecommendationBacktestParams {
   industry?: string;
   topN?: number;
+  runId?: number | null;
 }
 
 // ============ 周度推荐（单页：榜单 + 实时收益 + 买卖窗口） ============
@@ -300,6 +332,11 @@ export interface WeeklyLiveSummary {
 }
 
 export interface WeeklyRecommendationResponse {
+  runId: number;
+  modelId?: number | null;
+  modelName: string;
+  modelVersion: string;
+  generatedAt: string | null;
   scope: string;
   industry: string | null;
   asOfDate: string | null;
@@ -319,7 +356,7 @@ export interface WeeklyRecommendationResponse {
 export interface WeeklyRecommendationsParams {
   industry?: string;
   topN?: number;
-  industryCap?: number | null;
+  runId?: number | null;
 }
 
 export interface PredictionResponse {

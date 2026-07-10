@@ -207,6 +207,7 @@ class RecommendationItem(BaseModel):
     industry: Optional[str] = None
     strength_score: float = Field(..., description="强弱分 0~1(越高越强)")
     rank: int = Field(..., description="所选范围内名次(1=最强)")
+    rank_in_industry: Optional[int] = Field(None, description="所属行业内名次(1=最强，生成时算好)")
     rank_pct: float = Field(..., description="强弱分位 0~1(所选范围内)")
     suggested_weight: float = Field(..., description="组合建议权重(返回清单内∑=1)")
     last_close: Optional[float] = None
@@ -217,20 +218,45 @@ class StrategyHint(BaseModel):
     name: str = Field(..., description="口径名，如 双周·等权·行业≤3")
     rebalance: str = Field(..., description="调仓节奏，如 每2周(周一开盘)")
     weighting: str = Field(..., description="权重方式，如 等权")
-    industry_cap: Optional[int] = Field(None, description="每个行业最多几只(全市场推荐时生效)")
+    industry_cap: Optional[int] = Field(None, description="每个行业最多几只(已在生成时固定为前 20)")
     backtest: Optional[str] = Field(None, description="回测口径表现摘要")
 
 
+class SnapshotRun(BaseModel):
+    """一次强弱打分快照执行（不可变，永不覆盖）。"""
+    run_id: int = Field(..., description="快照执行 ID（一次 rank_snapshot.py = 一个 run）")
+    model_id: Optional[int] = Field(None, description="关联 prediction_models.id，唯一锁定训练产物")
+    model_name: str = Field(..., description="模型名，如 trend_xsec")
+    model_version: str = Field(..., description="模型版本/训练时间，如 20260706_171722")
+    as_of_date: Optional[str] = Field(None, description="特征取数的行情日 YYYY-MM-DD")
+    generated_at: Optional[str] = Field(None, description="本次执行真实时间(即'哪个时间预测的') ISO")
+    lookback_days: Optional[int] = None
+    universe_size: Optional[int] = Field(None, description="实际打分股票数")
+    industry_count: Optional[int] = Field(None, description="覆盖行业数")
+    note: Optional[str] = None
+
+
 class RecommendationsResponse(BaseModel):
+    run_id: int = Field(..., description="本次返回榜单所属的快照 run_id")
+    model_id: Optional[int] = Field(None, description="关联 prediction_models.id，唯一锁定训练产物")
+    model_name: str = Field(..., description="模型名")
+    model_version: str = Field(..., description="模型版本")
+    generated_at: Optional[str] = Field(None, description="快照生成时间 ISO")
     scope: str = Field(..., description="推荐范围：全市场 或 行业名")
     industry: Optional[str] = None
     as_of_date: Optional[str] = None
     universe_size: int = Field(..., description="所选范围内被打分的股票总数")
     count: int
-    industry_cap: Optional[int] = Field(None, description="本次生效的行业分散上限(全市场时)")
+    industry_cap: Optional[int] = Field(None, description="行业分散上限(生成时已固定为前 20，这里恒为 None)")
     strategy: Optional[StrategyHint] = Field(None, description="推荐的交易口径(回测最优)")
     items: List[RecommendationItem] = Field(default_factory=list)
     disclaimer: str
+
+
+class SnapshotRunsResponse(BaseModel):
+    """历史快照执行列表（最新在前），供前端「快照选择」下拉。"""
+    count: int
+    runs: List[SnapshotRun] = Field(default_factory=list)
 
 
 # ================ 推荐回测 ================
@@ -278,6 +304,11 @@ class BacktestSummary(BaseModel):
 class RecommendationBacktestResponse(BaseModel):
     """推荐回测完整响应。"""
 
+    run_id: int = Field(..., description="回测所用榜单的快照 run_id")
+    model_id: Optional[int] = Field(None, description="关联 prediction_models.id，唯一锁定训练产物")
+    model_name: str = Field(..., description="模型名")
+    model_version: str = Field(..., description="模型版本")
+    generated_at: Optional[str] = Field(None, description="快照生成时间 ISO")
     as_of_date: Optional[str] = Field(None, description="快照日(推荐日)")
     buy_date: str = Field(..., description="理论买入日(周一) YYYY-MM-DD")
     actual_buy_date: str = Field(..., description="实际生效买入日(若周一休市则顺延) YYYY-MM-DD")
@@ -336,12 +367,17 @@ class WeeklyLiveSummary(BaseModel):
 class WeeklyRecommendationResponse(BaseModel):
     """周度推荐单页完整响应：榜单 + 买卖窗口 + 实时收益。"""
 
+    run_id: int = Field(..., description="本次返回榜单所属的快照 run_id")
+    model_id: Optional[int] = Field(None, description="关联 prediction_models.id，唯一锁定训练产物")
+    model_name: str = Field(..., description="模型名")
+    model_version: str = Field(..., description="模型版本")
+    generated_at: Optional[str] = Field(None, description="快照生成时间 ISO")
     scope: str = Field(..., description="推荐范围：全市场 或 行业名")
     industry: Optional[str] = None
     as_of_date: Optional[str] = None
     universe_size: int = Field(..., description="所选范围内被打分的股票总数")
     count: int
-    industry_cap: Optional[int] = Field(None, description="本次生效的行业分散上限")
+    industry_cap: Optional[int] = Field(None, description="行业分散上限(生成时固定为前 20)")
     strategy: Optional[StrategyHint] = Field(None, description="推荐的交易口径(回测最优)")
     items: List[RecommendationItem] = Field(default_factory=list, description="推荐榜单(强弱分等)")
     trade_window: WeeklyTradeWindow = Field(..., description="买卖时间窗口(周一买/周五卖)")
@@ -358,6 +394,7 @@ class IndustryOption(BaseModel):
 
 
 class IndustriesResponse(BaseModel):
+    run_id: Optional[int] = Field(None, description="所属快照 run_id")
     as_of_date: Optional[str] = None
     count: int
     industries: List[IndustryOption] = Field(default_factory=list)

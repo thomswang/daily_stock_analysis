@@ -58,13 +58,14 @@ def _run(args: argparse.Namespace) -> dict:
         lookback_days=args.lookback,
         limit=args.limit,
     )
-    print("\n===== 强弱榜预计算完成 =====")
+    print("\n===== 强弱榜预计算完成（已登记为不可变 run） =====")
+    print(f"run_id:   {summary['run_id']}  ← 后续可用 --run-id 回溯本次榜单")
     print(f"打分日:   {summary['as_of_date']}")
     print(f"模型:     {summary['model_name']} @ {summary['model_version']}")
     print(f"打分股票: {summary['scored']} 只")
-    print(f"落库记录: {summary['written']} 条")
+    print(f"落库记录: {summary['written']} 条（每行业前 20）")
     print(f"行业覆盖: {summary['industries']} 个")
-    print("============================\n")
+    print("================================================\n")
     return summary
 
 

@@ -506,4 +506,9 @@ class StockRepository:
         bulk = self.load_kline_bulk(
             [code], start_date, end_date, batch_size=1, adj_type=adj_type,
         )
-        return bulk.get((code or "").strip().upper(), pd.DataFrame())
+        key = (code or "").strip().upper()
+        if key in bulk:
+            return bulk[key]
+        # load_kline_bulk 以裸码(000001)为 key，票池常传带后缀全码(000001.SZ)，
+        # 全码未命中时回退按裸码查，避免误判「本地无数据」而回退联网。
+        return bulk.get(key.split(".")[0], pd.DataFrame())

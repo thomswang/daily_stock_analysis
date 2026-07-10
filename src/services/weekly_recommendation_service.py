@@ -189,9 +189,9 @@ def _compute_live_return(df: pd.DataFrame, buy_date: date) -> Dict[str, Any]:
 
 def build_weekly_recommendations(
     *,
+    run_id: Optional[int] = None,
     industry: Optional[str] = None,
     top_n: int = 20,
-    industry_cap: Optional[int] = 3,
     as_of_date: Optional[date] = None,
     today: Optional[date] = None,
 ) -> Dict[str, Any]:
@@ -202,7 +202,7 @@ def build_weekly_recommendations(
     """
     ranking = StockRankingService()
     rec = ranking.get_recommendations(
-        industry=industry, top_n=top_n, industry_cap=industry_cap, as_of_date=as_of_date
+        run_id=run_id, industry=industry, top_n=top_n
     )
 
     # 锚定到「预测快照所在周」，而非请求当天——避免上/上周的预测被错算成本周收益。
@@ -281,6 +281,11 @@ def build_weekly_recommendations(
     }
 
     return {
+        "run_id": rec.get("run_id"),
+        "model_id": rec.get("model_id"),
+        "model_name": rec.get("model_name"),
+        "model_version": rec.get("model_version"),
+        "generated_at": rec.get("generated_at"),
         "scope": rec.get("scope"),
         "industry": rec.get("industry"),
         "as_of_date": rec.get("as_of_date"),

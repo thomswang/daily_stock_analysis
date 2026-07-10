@@ -34,6 +34,7 @@ from api.v1.schemas.prediction import (
     RecommendationBacktestResponse,
     BacktestStockItem,
     BacktestSummary,
+    SnapshotRunsResponse,
     WeeklyRecommendationResponse,
 )
 from src.services.prediction_service import PredictionError, predict_stock, rank_stocks
@@ -142,6 +143,23 @@ def prediction_rank(request: RankRequest) -> RankResponse:
 
 
 @router.get(
+    "/recommendations/runs",
+    response_model=SnapshotRunsResponse,
+    summary="历史快照执行列表",
+    description=(
+        "返回历史强弱打分快照执行(run)列表（最新在前），每项含模型名/版本/生成时间/行情日。"
+        "前端「快照选择」下拉用它来切换查看不同模型、不同时间生成的榜单。"
+    ),
+)
+def prediction_recommendation_runs(
+    limit: int = Query(50, ge=1, le=200, description="返回最近 N 个 run"),
+) -> SnapshotRunsResponse:
+    from src.services.stock_ranking_service import StockRankingService
+
+    return SnapshotRunsResponse(**StockRankingService().list_runs(limit=limit))
+
+
+@router.get(
     "/recommendations",
     response_model=RecommendationsResponse,
     responses={
@@ -150,24 +168,22 @@ def prediction_rank(request: RankRequest) -> RankResponse:
     },
     summary="选股推荐（横截面强弱榜）",
     description=(
-        "系统主动推荐：读取当日全市场强弱打分快照，返回最强的前 N 只及等权建议权重。"
-        "不传 industry=全市场榜（默认每行业≤3只做分散）；传 industry=该行业内排名。"
-        "响应含 strategy 字段给出回测最优的调仓口径(双周·等权·行业≤3)。"
-        "数据由后台预计算，秒级返回。强弱为相对排序，不构成投资建议。"
+        "系统主动推荐：读取某次快照(run)的全市场强弱打分，返回最强的前 N 只及等权建议权重。"
+        "不传 run_id=最新一次快照；传 run_id=查看历史上某次模型/某次时间生成的榜单（可回溯对比）。\n"
+        "不传 industry=全市场榜（按强弱取前 N，N≤20）；传 industry=该行业内前 20。\n"
+        "强弱为相对排序，不构成投资建议。"
     ),
 )
 def prediction_recommendations(
+    run_id: Optional[int] = Query(None, description="快照 run_id；留空=最新一次"),
     industry: Optional[str] = Query(None, description="按行业筛选；留空=全市场"),
-    top_n: int = Query(20, ge=1, le=200, description="返回前 N 强"),
-    industry_cap: Optional[int] = Query(
-        3, ge=1, le=50, description="全市场推荐时每个行业最多几只(分散抗扎堆)；行业查询时忽略"
-    ),
+    top_n: int = Query(20, ge=1, le=20, description="返回前 N 强（每行业最多 20，不支持更多）"),
 ) -> RecommendationsResponse:
     from src.services.stock_ranking_service import StockRankingError, StockRankingService
 
     try:
         result = StockRankingService().get_recommendations(
-            industry=industry, top_n=top_n, industry_cap=industry_cap
+            run_id=run_id, industry=industry, top_n=top_n
         )
         return RecommendationsResponse(**result)
     except StockRankingError as exc:
@@ -198,11 +214,9 @@ def prediction_recommendations(
     ),
 )
 def prediction_recommendations_weekly(
+    run_id: Optional[int] = Query(None, description="快照 run_id；留空=最新一次"),
     industry: Optional[str] = Query(None, description="按行业筛选；留空=全市场"),
-    top_n: int = Query(20, ge=1, le=200, description="返回前 N 强"),
-    industry_cap: Optional[int] = Query(
-        3, ge=1, le=50, description="全市场推荐时每个行业最多几只(分散抗扎堆)；行业查询时忽略"
-    ),
+    top_n: int = Query(20, ge=1, le=20, description="返回前 N 强（每行业最多 20）"),
 ) -> WeeklyRecommendationResponse:
     from src.services.weekly_recommendation_service import (
         StockRankingError,
@@ -211,7 +225,7 @@ def prediction_recommendations_weekly(
 
     try:
         payload = build_weekly_recommendations(
-            industry=industry, top_n=top_n, industry_cap=industry_cap
+            run_id=run_id, industry=industry, top_n=top_n
         )
         return WeeklyRecommendationResponse(**payload)
     except StockRankingError as exc:
@@ -228,12 +242,14 @@ def prediction_recommendations_weekly(
     "/industries",
     response_model=IndustriesResponse,
     summary="可选行业清单",
-    description="当日强弱榜覆盖的行业清单及各行业股票数，供行业筛选下拉。",
+    description="某次快照(run)覆盖的行业清单及各行业股票数，供行业筛选下拉。",
 )
-def prediction_industries() -> IndustriesResponse:
+def prediction_industries(
+    run_id: Optional[int] = Query(None, description="快照 run_id；留空=最新一次"),
+) -> IndustriesResponse:
     from src.services.stock_ranking_service import StockRankingService
 
-    return IndustriesResponse(**StockRankingService().list_industries())
+    return IndustriesResponse(**StockRankingService().list_industries(run_id=run_id))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -256,12 +272,13 @@ def prediction_industries() -> IndustriesResponse:
     ),
 )
 def prediction_recommendations_backtest(
+    run_id: Optional[int] = Query(None, description="快照 run_id；留空=最新一次"),
     industry: Optional[str] = Query(None, description="按行业筛选；留空=全市场"),
-    top_n: int = Query(20, ge=1, le=50, description="取前 N 强(回测较重，建议≤20)"),
+    top_n: int = Query(20, ge=1, le=20, description="取前 N 强(每行业最多 20)"),
 ) -> RecommendationBacktestResponse:
     """
     业务流程：
-        1) 拿当日推荐清单(全市场/行业)
+        1) 拿某次快照(run)的推荐清单(全市场/行业)
         2) 找快照日所在周一的实际买入日(顺延到最近的有效交易日)
         3) 逐票读 kline 拿到 [买入日, 买入日+10] 的日线
         4) 模拟周一开盘价买入，计算 1/3/5 日 (T+N 收盘) 相对买入价涨跌幅
@@ -275,9 +292,9 @@ def prediction_recommendations_backtest(
     ranking = StockRankingService()
     stock_repo = StockRepository()
 
-    # 1. 拿推荐清单 (复刻 StockRankingService.get_recommendations 的过滤+分散逻辑，但只取 items)
+    # 1. 拿推荐清单 (复刻 StockRankingService.get_recommendations 的过滤逻辑，但只取 items)
     try:
-        rec = ranking.get_recommendations(industry=industry, top_n=top_n, industry_cap=3)
+        rec = ranking.get_recommendations(run_id=run_id, industry=industry, top_n=top_n)
     except StockRankingError as exc:
         raise HTTPException(
             status_code=400,
@@ -406,6 +423,11 @@ def prediction_recommendations_backtest(
     )
 
     return RecommendationBacktestResponse(
+        run_id=rec.get("run_id"),
+        model_id=rec.get("model_id"),
+        model_name=rec.get("model_name"),
+        model_version=rec.get("model_version"),
+        generated_at=rec.get("generated_at"),
         as_of_date=as_of_date.isoformat() if as_of_date else None,
         buy_date=monday.isoformat(),
         actual_buy_date=actual_buy_date.isoformat(),

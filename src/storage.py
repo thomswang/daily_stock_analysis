@@ -415,23 +415,65 @@ class StockIndustry(Base):
         return f"<StockIndustry(code={self.code}, industry={self.industry}, as_of={self.as_of_date})>"
 
 
+class StockRankRun(Base):
+    """
+    一次「强弱打分快照」执行的元数据（不可变，永远不覆盖）。
+
+    设计取舍：每次 rank_snapshot.py 执行 = 一个 run。run 之间互不覆盖，便于
+    回溯「这份榜单是 哪个模型(model_name/version) 在 哪个时间(generated_at) 预测
+    的」，也方便对不同时期/不同模型的榜单做回测对比。
+
+    明细行在 stock_rank_snapshot，通过 run_id 关联。
+    """
+    __tablename__ = 'stock_rank_run'
+
+    run_id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # 打分所用模型（可追溯）
+    model_name = Column(String(64), nullable=False, index=True)
+    model_version = Column(String(64), nullable=False, index=True)
+    # 硬关联 prediction_model.id：唯一锁定「哪个训练产物」，即便同名模型重训也不混淆
+    model_id = Column(
+        Integer,
+        ForeignKey("prediction_models.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    # 特征取数的行情日期（多数票的最新交易日）
+    as_of_date = Column(Date, nullable=False, index=True)
+    # 本次执行的真实时间 = 「哪个时间预测的」
+    generated_at = Column(DateTime, nullable=False, default=datetime.now, index=True)
+
+    # 生成参数 / 规模（可追溯）
+    lookback_days = Column(Integer)
+    universe_size = Column(Integer)      # 实际打分的股票数
+    industry_count = Column(Integer)     # 覆盖行业数
+    note = Column(String(256))
+
+    def __repr__(self):
+        return f"<StockRankRun(id={self.run_id}, model={self.model_name}@{self.model_version}, as_of={self.as_of_date})>"
+
+
 class StockRankSnapshot(Base):
     """
-    全市场横截面「强弱打分」快照（每日预计算，供主动选股推荐）
+    某次 run 下、每个行业前 20 的强弱打分明细（按行业截断后落库）。
 
-    设计取舍：给全市场每只票打分是重活（需逐票构造特征 + 模型推理），不宜放在
-    用户请求链路里实时算。故由后台任务每日预计算一次、落这张表；查询时只需
-    读快照 + 按行业过滤 + 组内重排，毫秒级返回。行业冗余存一列，行业榜免联表。
+    设计取舍：给全市场每只票打分是重活，但只保留「每个行业前 20」即可满足
+    推荐展示需求（行业榜=该行业前20，全市场=按强弱取前20）。生成时即算好
+    rank_in_industry，查询免排序、毫秒级返回。行业冗余存一列，行业榜免联表。
 
-    一行 = 某只票在某个打分日的强弱分。
+    一行 = 某次 run 下、某只票在所属行业内的强弱分（行业内名次 1..20）。
     """
     __tablename__ = 'stock_rank_snapshot'
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(
+        Integer, ForeignKey('stock_rank_run.run_id', ondelete='CASCADE'),
+        nullable=False, index=True,
+    )
 
-    # 打分对应的行情日期（特征取到的最新交易日）
-    as_of_date = Column(Date, nullable=False, index=True)
-    # 股票代码（与 stock_daily.code 同口径）
+    # 股票代码（与 stock_daily.code 同口径，带后缀如 000001.SZ）
     code = Column(String(10), nullable=False, index=True)
     stock_name = Column(String(64))
     # 冗余存所属行业，做行业榜时免联表（打分时从行业映射带入）
@@ -439,22 +481,22 @@ class StockRankSnapshot(Base):
 
     # 强弱分 0~1：属当日全市场强势前 50% 的概率（越高越强）
     strength_score = Column(Float, nullable=False)
-    last_close = Column(Float)
+    # 所属行业内的名次（1=最强），生成时即算好，上限 20
+    rank_in_industry = Column(Integer, nullable=False)
 
-    # 打分所用模型（可追溯）
-    model_name = Column(String(32))
-    model_version = Column(String(32))
+    last_close = Column(Float)
 
     created_at = Column(DateTime, default=datetime.now)
 
-    # 同一票同一打分日只保留一条
+    # 同一 run 下每只票只保留一行
     __table_args__ = (
-        UniqueConstraint('as_of_date', 'code', name='uix_rank_date_code'),
-        Index('ix_rank_date_industry', 'as_of_date', 'industry'),
+        UniqueConstraint('run_id', 'code', name='uix_rank_run_code'),
+        Index('ix_rank_run_industry', 'run_id', 'industry'),
+        Index('ix_rank_run_score', 'run_id', 'strength_score'),
     )
 
     def __repr__(self):
-        return f"<StockRankSnapshot(code={self.code}, score={self.strength_score}, as_of={self.as_of_date})>"
+        return f"<StockRankSnapshot(run={self.run_id}, code={self.code}, score={self.strength_score}, rk={self.rank_in_industry})>"
 
 
 class NewsIntel(Base):
@@ -1592,6 +1634,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_stock_daily_columns()
             self._ensure_ohlcv_columns()
+            self._ensure_rank_snapshot_schema()
             self._ensure_financial_report_table()
             self._ensure_intelligence_item_scope_values()
             self._ensure_schema_migration_record()
@@ -1784,6 +1827,42 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         with self._engine.begin() as conn:
             conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily_ohlcv")
         Base.metadata.create_all(self._engine, tables=[StockDailyOhlcv.__table__])
+
+    def _ensure_rank_snapshot_schema(self) -> None:
+        """强弱榜快照重构为 run 维度：旧 stock_rank_snapshot 无 run_id 列，需删表重建。
+
+        旧表（只存 as_of_date+code 的覆盖式快照）与新的「run + 每行业前 20」结构不兼容，
+        按用户确认直接删表重建（历史快照数据无需迁移）。stock_rank_run 为新表。
+
+        当用户新增 model_id 等列而已有库缺列时，同样触发删表重建（快照表不考虑兼容）。
+        """
+        if not self._is_sqlite_engine:
+            Base.metadata.create_all(
+                self._engine, tables=[StockRankRun.__table__, StockRankSnapshot.__table__]
+            )
+            return
+        needs_rebuild = False
+        try:
+            snap_cols = {c["name"] for c in inspect(self._engine).get_columns("stock_rank_snapshot")}
+            run_cols = {c["name"] for c in inspect(self._engine).get_columns("stock_rank_run")}
+            # 任一关键列缺失即视为旧 schema，整体删重建
+            if "run_id" not in snap_cols or "model_id" not in run_cols:
+                needs_rebuild = True
+        except Exception:
+            # 表不存在：交给 create_all 创建
+            pass
+        if needs_rebuild:
+            logger.warning(
+                "[rank_snapshot] 检测到旧 schema（缺 run_id/model_id），删除 stock_rank_run + "
+                "stock_rank_snapshot 并按新结构重建"
+            )
+            with self._engine.begin() as conn:
+                # 先删子表（外键引用 run），再删父表
+                conn.exec_driver_sql("DROP TABLE IF EXISTS stock_rank_snapshot")
+                conn.exec_driver_sql("DROP TABLE IF EXISTS stock_rank_run")
+        Base.metadata.create_all(
+            self._engine, tables=[StockRankRun.__table__, StockRankSnapshot.__table__]
+        )
 
     def _ensure_stock_daily_columns(self) -> None:
         """给已存在的 stock_daily 表补齐原始行情扩展列（涨跌额/振幅/换手率）。

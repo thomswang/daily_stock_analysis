@@ -10,10 +10,12 @@ import type {
   PredictionHistoryResponse,
   PredictionRequest,
   PredictionResponse,
+  RecommendationRunsResponse,
   RecommendationsParams,
   RecommendationsResponse,
   RecommendationBacktestParams,
   RecommendationBacktestResponse,
+  SnapshotRun,
   WeeklyRecommendationResponse,
   WeeklyRecommendationsParams,
 } from '../types/prediction';
@@ -94,17 +96,27 @@ export const predictionApi = {
   recommendations: async (params: RecommendationsParams = {}): Promise<RecommendationsResponse> => {
     const response = await apiClient.get<Record<string, unknown>>('/api/v1/prediction/recommendations', {
       params: {
+        run_id: params.runId ?? undefined,
         industry: params.industry || undefined,
         top_n: params.topN ?? 20,
-        industry_cap: params.industryCap === null ? undefined : (params.industryCap ?? 3),
       },
     });
     return toCamelCase<RecommendationsResponse>(response.data);
   },
 
-  /** Available industries in the latest ranking snapshot (for the industry dropdown). */
-  industries: async (): Promise<IndustriesResponse> => {
-    const response = await apiClient.get<Record<string, unknown>>('/api/v1/prediction/industries');
+  /** List historical snapshot runs (for the "snapshot selector" dropdown). */
+  recommendationRuns: async (limit = 50): Promise<RecommendationRunsResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/prediction/recommendations/runs', {
+      params: { limit },
+    });
+    return toCamelCase<RecommendationRunsResponse>(response.data);
+  },
+
+  /** Available industries in the selected ranking snapshot run (for the industry dropdown). */
+  industries: async (runId?: number | null): Promise<IndustriesResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>('/api/v1/prediction/industries', {
+      params: { run_id: runId ?? undefined },
+    });
     return toCamelCase<IndustriesResponse>(response.data);
   },
 
@@ -119,6 +131,7 @@ export const predictionApi = {
       '/api/v1/prediction/recommendations/backtest',
       {
         params: {
+          run_id: params.runId ?? undefined,
           industry: params.industry || undefined,
           top_n: params.topN ?? 20,
         },
@@ -137,12 +150,12 @@ export const predictionApi = {
     const response = await apiClient.get<Record<string, unknown>>(
       '/api/v1/prediction/recommendations/weekly',
       {
-        params: {
-          industry: params.industry || undefined,
-          top_n: params.topN ?? 20,
-          industry_cap: params.industryCap === null ? undefined : (params.industryCap ?? 3),
-        },
-        timeout: 60000,
+      params: {
+        run_id: params.runId ?? undefined,
+        industry: params.industry || undefined,
+        top_n: params.topN ?? 20,
+      },
+      timeout: 60000,
       },
     );
     return toCamelCase<WeeklyRecommendationResponse>(response.data);
