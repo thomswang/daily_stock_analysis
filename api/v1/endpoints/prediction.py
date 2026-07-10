@@ -34,6 +34,7 @@ from api.v1.schemas.prediction import (
     RecommendationBacktestResponse,
     BacktestStockItem,
     BacktestSummary,
+    WeeklyRecommendationResponse,
 )
 from src.services.prediction_service import PredictionError, predict_stock, rank_stocks
 
@@ -176,6 +177,50 @@ def prediction_recommendations(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"选股推荐失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/recommendations/weekly",
+    response_model=WeeklyRecommendationResponse,
+    responses={
+        200: {"description": "查询成功"},
+        400: {"description": "暂无快照或参数错误", "model": ErrorResponse},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="周度选股推荐（实时收益 · 单页）",
+    description=(
+        "推荐榜单 + 买卖时间窗口(周一买/周五卖) + 实时收益(腾讯行情) 合一返回，"
+        "供前端单页展示（不再分「推荐列表 / 收益回测」两个 Tab）。\n"
+        "时间一致性：买入日(周一)未到(如周六日，下周一才买)→ 实时收益为 null(待买入)；"
+        "买入日已到→ 以周一开盘价为成本基准，实时计算 1/3/5 日收益。\n"
+        "实时数据通过 TencentFetcher 拉取（快、不易被封）。强弱为相对排序，不构成投资建议。"
+    ),
+)
+def prediction_recommendations_weekly(
+    industry: Optional[str] = Query(None, description="按行业筛选；留空=全市场"),
+    top_n: int = Query(20, ge=1, le=200, description="返回前 N 强"),
+    industry_cap: Optional[int] = Query(
+        3, ge=1, le=50, description="全市场推荐时每个行业最多几只(分散抗扎堆)；行业查询时忽略"
+    ),
+) -> WeeklyRecommendationResponse:
+    from src.services.weekly_recommendation_service import (
+        StockRankingError,
+        build_weekly_recommendations,
+    )
+
+    try:
+        payload = build_weekly_recommendations(
+            industry=industry, top_n=top_n, industry_cap=industry_cap
+        )
+        return WeeklyRecommendationResponse(**payload)
+    except StockRankingError as exc:
+        raise HTTPException(status_code=400, detail={"error": "no_snapshot", "message": str(exc)})
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"周度推荐失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"周度推荐失败: {str(exc)}"},
         )
 
 

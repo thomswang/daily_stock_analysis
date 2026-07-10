@@ -287,6 +287,69 @@ class RecommendationBacktestResponse(BaseModel):
     disclaimer: str
 
 
+# ================ 周度推荐（单页：榜单 + 实时收益 + 买卖窗口） ================
+
+class WeeklyLiveItem(BaseModel):
+    """单只推荐票的实时收益明细（腾讯行情，周一开盘买入）。"""
+
+    code: str
+    available: bool = Field(False, description="是否已取到实时收益")
+    buy_date: Optional[str] = Field(None, description="实际买入日(周一) YYYY-MM-DD")
+    buy_price: Optional[float] = Field(None, description="买入价(周一开盘价)")
+    last_price: Optional[float] = Field(None, description="最新价(腾讯实时收盘)")
+    return_1d_pct: Optional[float] = Field(None, description="1日(T+1收盘)相对买入价涨跌幅%")
+    return_3d_pct: Optional[float] = Field(None, description="3日(T+3收盘)相对买入价涨跌幅%")
+    return_wk_pct: Optional[float] = Field(None, description="当周收益(周一开买→周五收卖)相对买入价涨跌幅%")
+    note: Optional[str] = Field(None, description="数据缺失/未到买入日时的提示")
+
+
+class WeeklyTradeWindow(BaseModel):
+    """买卖时间窗口（与模型训练口径一致：周一买、周五卖）。"""
+
+    buy_date: str = Field(..., description="买入日(周一) YYYY-MM-DD")
+    sell_date: str = Field(..., description="卖出日(当周周五) YYYY-MM-DD")
+    status: str = Field(..., description="buy_today(周一买入)/holding(持有中)/pending(待买入)")
+    status_label: str = Field(..., description="状态中文标签")
+    next_buy_date: str = Field(..., description="下一次买入日(下周一) YYYY-MM-DD")
+    days_since_buy: int = Field(..., description="距买入日天数")
+    days_to_sell: int = Field(..., description="距卖出日天数")
+    is_buy_reached: bool = Field(..., description="买入日是否已到(决定能否取实时收益)")
+
+
+class WeeklyLiveSummary(BaseModel):
+    """实时收益汇总统计。"""
+
+    total: int = Field(0, description="参与实时计算的股票数")
+    with_data: int = Field(0, description="有完整实时收益数据的股票数")
+    avg_1d_pct: float = Field(0.0, description="平均1日收益%")
+    avg_3d_pct: float = Field(0.0, description="平均3日收益%")
+    avg_wk_pct: float = Field(0.0, description="平均当周收益%")
+    win_rate_1d: float = Field(0.0, description="1日正收益占比 0~1")
+    win_rate_3d: float = Field(0.0, description="3日正收益占比 0~1")
+    win_rate_wk: float = Field(0.0, description="当周正收益占比 0~1")
+    best_1d_pct: float = Field(0.0, description="最佳1日收益%")
+    worst_1d_pct: float = Field(0.0, description="最差1日收益%")
+
+
+class WeeklyRecommendationResponse(BaseModel):
+    """周度推荐单页完整响应：榜单 + 买卖窗口 + 实时收益。"""
+
+    scope: str = Field(..., description="推荐范围：全市场 或 行业名")
+    industry: Optional[str] = None
+    as_of_date: Optional[str] = None
+    universe_size: int = Field(..., description="所选范围内被打分的股票总数")
+    count: int
+    industry_cap: Optional[int] = Field(None, description="本次生效的行业分散上限")
+    strategy: Optional[StrategyHint] = Field(None, description="推荐的交易口径(回测最优)")
+    items: List[RecommendationItem] = Field(default_factory=list, description="推荐榜单(强弱分等)")
+    trade_window: WeeklyTradeWindow = Field(..., description="买卖时间窗口(周一买/周五卖)")
+    live: List[WeeklyLiveItem] = Field(default_factory=list, description="与 items 同序的实时收益明细")
+    live_summary: WeeklyLiveSummary = Field(..., description="实时收益汇总")
+    data_source: Optional[str] = Field(None, description="实时行情数据源")
+    fetched_at: Optional[str] = Field(None, description="实时行情拉取时间(ISO)")
+    disclaimer: str
+
+
 class IndustryOption(BaseModel):
     industry: str
     count: int = Field(..., description="该行业当日被打分的股票数")

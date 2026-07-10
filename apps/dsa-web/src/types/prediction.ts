@@ -259,6 +259,67 @@ export interface RecommendationBacktestParams {
   topN?: number;
 }
 
+// ============ 周度推荐（单页：榜单 + 实时收益 + 买卖窗口） ============
+
+export interface WeeklyLiveItem {
+  code: string;
+  available: boolean;
+  buyDate: string | null;
+  buyPrice: number | null;
+  lastPrice: number | null;
+  return1dPct: number | null;
+  return3dPct: number | null;
+  returnWkPct: number | null;
+  note?: string | null;
+}
+
+export interface WeeklyTradeWindow {
+  buyDate: string;
+  sellDate: string;
+  status: 'buy_today' | 'holding' | 'pending';
+  statusLabel: string;
+  nextBuyDate: string;
+  daysSinceBuy: number;
+  daysToSell: number;
+  isBuyReached: boolean;
+}
+
+export interface WeeklyLiveSummary {
+  total: number;
+  withData: number;
+  avg1dPct: number;
+  avg3dPct: number;
+  avgWkPct: number;
+  winRate1d: number;
+  winRate3d: number;
+  winRateWk: number;
+  best1dPct: number;
+  worst1dPct: number;
+}
+
+export interface WeeklyRecommendationResponse {
+  scope: string;
+  industry: string | null;
+  asOfDate: string | null;
+  universeSize: number;
+  count: number;
+  industryCap: number | null;
+  strategy: StrategyHint | null;
+  items: RecommendationItem[];
+  tradeWindow: WeeklyTradeWindow;
+  live: WeeklyLiveItem[];
+  liveSummary: WeeklyLiveSummary;
+  dataSource: string | null;
+  fetchedAt: string | null;
+  disclaimer: string;
+}
+
+export interface WeeklyRecommendationsParams {
+  industry?: string;
+  topN?: number;
+  industryCap?: number | null;
+}
+
 export interface PredictionResponse {
   stockCode: string;
   stockName: string | null;

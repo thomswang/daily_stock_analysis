@@ -14,6 +14,8 @@ import type {
   RecommendationsResponse,
   RecommendationBacktestParams,
   RecommendationBacktestResponse,
+  WeeklyRecommendationResponse,
+  WeeklyRecommendationsParams,
 } from '../types/prediction';
 
 export const predictionApi = {
@@ -123,5 +125,26 @@ export const predictionApi = {
       },
     );
     return toCamelCase<RecommendationBacktestResponse>(response.data);
+  },
+
+  /**
+   * Weekly recommendations (single page): ranking board + buy/sell window
+   * (Mon buy / Fri sell) + live returns fetched via TencentFetcher.
+   */
+  recommendationsWeekly: async (
+    params: WeeklyRecommendationsParams = {},
+  ): Promise<WeeklyRecommendationResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/prediction/recommendations/weekly',
+      {
+        params: {
+          industry: params.industry || undefined,
+          top_n: params.topN ?? 20,
+          industry_cap: params.industryCap === null ? undefined : (params.industryCap ?? 3),
+        },
+        timeout: 60000,
+      },
+    );
+    return toCamelCase<WeeklyRecommendationResponse>(response.data);
   },
 };

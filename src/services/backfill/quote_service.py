@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .runner import run_backfill_job
 from .segment_planner import is_no_data_error, plan_segments
 from .segment_planner import iso as _iso
+from .throttle import jittered_sleep
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ class QuoteBackfillService:
         for seg_start, seg_end in segments:
             result, err = self._ingest_with_retry(code, seg_start, seg_end, retry=retry)
             if sleep > 0:
-                time.sleep(sleep)
+                jittered_sleep(sleep)
             if err is not None:
                 if got_any:
                     logger.warning(

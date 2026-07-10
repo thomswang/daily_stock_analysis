@@ -1,6 +1,6 @@
 import type React from 'react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, Calendar, Info, ListChecks, RefreshCw, Sparkles, TrendingDown, TrendingUp, Trophy } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { CalendarClock, Info, ListChecks, RefreshCw, Sparkles, TrendingUp, Trophy } from 'lucide-react';
 import { predictionApi } from '../api/prediction';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import {
@@ -16,9 +16,9 @@ import { useUiLanguage } from '../contexts/UiLanguageContext';
 import type {
   IndustryOption,
   RecommendationItem,
-  RecommendationsResponse,
-  RecommendationBacktestResponse,
-  BacktestStockItem,
+  WeeklyLiveItem,
+  WeeklyRecommendationResponse,
+  WeeklyTradeWindow,
 } from '../types/prediction';
 
 // ============ Localized text ============
@@ -47,40 +47,41 @@ const TEXT = {
     weightingLabel: '权重',
     capLabel: '行业分散',
     backtestLabel: '回测',
-    listTitle: '强弱榜',
-    listHint: '强弱分为横截面相对排序（越高越强），建议权重为等权（清单内∑=100%）',
+    listHint: '强弱分为横截面相对排序（越高越强）；建议权重为等权（清单内∑=100%）。收益为腾讯实时行情，周一开盘买入、当周周五卖出。',
     colRank: '#',
     colName: '股票',
     colIndustry: '行业',
     colScore: '强弱分',
     colWeight: '建议权重',
-    colClose: '最新价',
-    unit: '只',
+    colBuySell: '买入 → 卖出',
+    colLast: '最新价',
+    colR1: '1日',
+    colR3: '3日',
+    colR5: '当周',
+    colStatus: '状态',
     disclaimerTitle: '风险提示',
-    // Tabs & backtest table
-    tabList: '推荐列表',
-    tabBacktest: '收益回测',
-    backtestHint: '基于历史K线，模拟周一开盘价(集合竞价)买入，统计 1/3/5 日实际涨跌幅。仅供研究参考。',
-    backtestStrategy: '本次回测口径',
-    backtestBuyDate: '实际买入日',
-    backtestEmpty: '暂无回测数据',
-    btColCode: '股票',
-    btColScore: '强弱分',
-    btColBuyDate: '买入日',
-    btColBuyPrice: '买入价',
-    btColAuction: '竞价价',
-    btColOpen: '开盘价',
-    btColR1: '1日收益',
-    btColR3: '3日收益',
-    btColR5: '当周收益',
-    btColKline: 'K线判断',
-    btColVol: '成交量',
-    btSummaryTotal: '回测样本',
-    btSummaryAvg1: '平均1日',
-    btSummaryAvg3: '平均3日',
-    btSummaryAvg5: '平均当周',
-    btSummaryBest: '最佳1日',
-    btSummaryWorst: '最差1日',
+    // Trade window banner
+    windowTitle: '本周交易窗口',
+    windowBuy: '买入日（周一开盘）',
+    windowSell: '卖出日（周五收盘）',
+    windowNext: '下次买入',
+    windowPending: '待买入',
+    windowHolding: '持有中',
+    windowBuyToday: '本周一买入',
+    windowHintLive: '实时行情',
+    windowHintPending: '买入日未到，暂无实时收益（买入后自动更新）',
+    // Live summary
+    liveTitle: '实时收益概览（腾讯行情）',
+    liveAvg1: '平均1日',
+    liveAvg3: '平均3日',
+    liveAvg5: '平均当周',
+    liveWin1: '1日胜率',
+    liveWin3: '3日胜率',
+    liveWin5: '当周胜率',
+    unit: '只',
+    statusPending: '待买入',
+    statusLive: '实时',
+    statusMissing: '无行情',
   },
   en: {
     documentTitle: 'Stock Picks · DSA',
@@ -105,42 +106,43 @@ const TEXT = {
     weightingLabel: 'Weighting',
     capLabel: 'Diversify',
     backtestLabel: 'Backtest',
-    listTitle: 'Strength board',
-    listHint: 'Strength is a cross-sectional relative rank (higher = stronger); suggested weight is equal-weight (sums to 100%)',
+    listHint: 'Strength is a cross-sectional relative rank (higher = stronger); suggested weight is equal-weight (sums to 100%). Returns are live Tencent quotes: buy Monday open, sell Friday close.',
     colRank: '#',
     colName: 'Stock',
     colIndustry: 'Industry',
     colScore: 'Strength',
     colWeight: 'Weight',
-    colClose: 'Close',
-    unit: '',
+    colBuySell: 'Buy → Sell',
+    colLast: 'Last',
+    colR1: '1D',
+    colR3: '3D',
+    colR5: 'Wk',
+    colStatus: 'Status',
     disclaimerTitle: 'Disclaimer',
-    // Tabs & backtest table
-    tabList: 'Picks',
-    tabBacktest: 'Returns backtest',
-    backtestHint: 'Simulates buying at Monday\'s open (call auction) and reports the actual 1/3/5-day returns. Research use only.',
-    backtestStrategy: 'Backtest setup',
-    backtestBuyDate: 'Actual buy date',
-    backtestEmpty: 'No backtest data',
-    btColCode: 'Stock',
-    btColScore: 'Score',
-    btColBuyDate: 'Buy date',
-    btColBuyPrice: 'Buy price',
-    btColAuction: 'Auction',
-    btColOpen: 'Open',
-    btColR1: '1D ret',
-    btColR3: '3D ret',
-    btColR5: 'Wk ret',
-    btColKline: 'K-line',
-    btColVol: 'Volume',
-    btSummaryTotal: 'Samples',
-    btSummaryAvg1: 'Avg 1D',
-    btSummaryAvg3: 'Avg 3D',
-    btSummaryAvg5: 'Avg Wk',
-    btSummaryBest: 'Best 1D',
-    btSummaryWorst: 'Worst 1D',
+    windowTitle: 'This week\'s trade window',
+    windowBuy: 'Buy (Mon open)',
+    windowSell: 'Sell (Fri close)',
+    windowNext: 'Next buy',
+    windowPending: 'Pending',
+    windowHolding: 'Holding',
+    windowBuyToday: 'Bought Mon',
+    windowHintLive: 'Live quotes',
+    windowHintPending: 'Buy date not reached yet — no live returns (auto-updates after buy)',
+    liveTitle: 'Live returns overview (Tencent)',
+    liveAvg1: 'Avg 1D',
+    liveAvg3: 'Avg 3D',
+    liveAvg5: 'Avg Wk',
+    liveWin1: '1D win',
+    liveWin3: '3D win',
+    liveWin5: 'Wk win',
+    unit: '',
+    statusPending: 'Pending',
+    statusLive: 'Live',
+    statusMissing: 'No quote',
   },
 } as const;
+
+type Lang = (typeof TEXT)[keyof typeof TEXT];
 
 const SCORE_COLOR = '#6366f1';
 
@@ -157,54 +159,10 @@ const RankMedal: React.FC<{ rank: number }> = ({ rank }) => {
   return <span className="font-mono text-xs text-secondary-text">{rank}</span>;
 };
 
-// ============== Backtest table helpers ==============
-
-const KLINE_PRIMARY_STYLES: Record<string, { bg: string; color: string }> = {
-  '均线修复转强': { bg: 'bg-emerald-500/10', color: 'text-emerald-400' },
-  '强势反弹': { bg: 'bg-emerald-500/10', color: 'text-emerald-400' },
-  '趋势修复观察': { bg: 'bg-amber-500/10', color: 'text-amber-400' },
-  '震荡修复': { bg: 'bg-amber-500/10', color: 'text-amber-400' },
-  '蓄势整理': { bg: 'bg-sky-500/10', color: 'text-sky-400' },
-  '方向选择中': { bg: 'bg-violet-500/10', color: 'text-violet-400' },
-  '底部震荡': { bg: 'bg-rose-500/10', color: 'text-rose-400' },
-  '回调确认': { bg: 'bg-rose-500/10', color: 'text-rose-400' },
-  '弱势延续': { bg: 'bg-rose-500/20', color: 'text-rose-300' },
-  '不确定': { bg: 'bg-slate-500/10', color: 'text-slate-400' },
-};
-const KLINE_DEFAULT = { bg: 'bg-slate-500/10', color: 'text-slate-400' };
-
-const VOLUME_STYLES: Record<string, string> = {
-  '放量': 'bg-rose-500/10 text-rose-400',
-  '温和放量': 'bg-amber-500/10 text-amber-400',
-  '正常': 'bg-emerald-500/10 text-emerald-400',
-  '缩量': 'bg-sky-500/10 text-sky-400',
-  '异常': 'bg-slate-500/10 text-slate-400',
-};
-
-const KLineChip: React.FC<{ primary: string; secondary: string }> = ({ primary, secondary }) => {
-  const s = KLINE_PRIMARY_STYLES[primary] ?? KLINE_DEFAULT;
-  return (
-    <span
-      className={`inline-flex flex-col items-center gap-0.5 rounded-md px-2 py-0.5 text-center ${s.bg} ${s.color}`}
-      style={{ minWidth: 76, lineHeight: 1.15 }}
-      title={secondary}
-    >
-      <span className="text-[11px] font-semibold">{primary}</span>
-      <span className="text-[10px] font-medium opacity-75">{secondary}</span>
-    </span>
-  );
-};
-
-const VolumeChip: React.FC<{ status: string }> = ({ status }) => {
-  const cls = VOLUME_STYLES[status] ?? VOLUME_STYLES['异常'];
-  return (
-    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-semibold ${cls}`}>
-      {status}
-    </span>
-  );
-};
-
-const ReturnCell: React.FC<{ value: number | null | undefined }> = ({ value }) => {
+const ReturnCell: React.FC<{ value: number | null | undefined; pending?: boolean }> = ({ value, pending }) => {
+  if (pending) {
+    return <span className="text-[11px] font-medium text-amber-400/90">待买入</span>;
+  }
   if (value == null) return <span className="text-secondary-text/60">--</span>;
   const positive = value > 0;
   const negative = value < 0;
@@ -217,217 +175,151 @@ const ReturnCell: React.FC<{ value: number | null | undefined }> = ({ value }) =
   );
 };
 
-const ScorePct: React.FC<{ value: number }> = ({ value }) => (
-  <span className="font-mono text-xs font-semibold tabular-nums text-foreground">
-    {(value * 100).toFixed(0)}
-  </span>
-);
-
-// ============== Sub-components: RankingTable & BacktestPanel ==============
-
-const RankingTable: React.FC<{
-  items: RecommendationItem[];
-  text: typeof TEXT.zh;
-  scoreWidth: (s: number) => number;
-}> = ({ items, text, scoreWidth }) => (
-  <div className="overflow-x-auto">
-    <table className="w-full text-sm">
-      <thead>
-        <tr className="border-b border-border/60 text-left text-xs uppercase tracking-wider text-secondary-text">
-          <th className="w-10 py-2 pr-2 text-center">{text.colRank}</th>
-          <th className="py-2 pr-3">{text.colName}</th>
-          <th className="py-2 pr-3">{text.colIndustry}</th>
-          <th className="py-2 pr-3">{text.colScore}</th>
-          <th className="py-2 pr-3 text-right">{text.colWeight}</th>
-          <th className="py-2 pr-1 text-right">{text.colClose}</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.map((it) => (
-          <tr key={it.code} className="border-b border-border/30 transition-colors hover:bg-elevated/40">
-            <td className="py-2.5 pr-2 text-center align-middle">
-              <RankMedal rank={it.rank} />
-            </td>
-            <td className="py-2.5 pr-3 align-middle">
-              <div className="flex flex-col">
-                <span className="font-medium text-foreground">{it.stockName || it.code}</span>
-                <span className="font-mono text-xs text-secondary-text">{it.code}</span>
-              </div>
-            </td>
-            <td className="py-2.5 pr-3 align-middle">
-              {it.industry ? (
-                <Badge variant="default">{it.industry}</Badge>
-              ) : (
-                <span className="text-xs text-secondary-text">--</span>
-              )}
-            </td>
-            <td className="py-2.5 pr-3 align-middle">
-              <div className="flex items-center gap-2">
-                <div className="relative h-2 w-24 overflow-hidden rounded-full bg-elevated/60">
-                  <div
-                    className="absolute left-0 top-0 h-full rounded-full"
-                    style={{ width: `${scoreWidth(it.strengthScore)}%`, background: SCORE_COLOR, opacity: 0.8 }}
-                  />
-                </div>
-                <span className="font-mono text-xs text-foreground">{it.strengthScore.toFixed(3)}</span>
-              </div>
-            </td>
-            <td className="py-2.5 pr-3 text-right align-middle">
-              <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-[hsl(var(--primary))]">
-                <TrendingUp className="h-3 w-3" />
-                {pct(it.suggestedWeight)}
-              </span>
-            </td>
-            <td className="py-2.5 pr-1 text-right align-middle font-mono text-xs text-foreground">
-              {it.lastClose != null ? it.lastClose.toFixed(2) : '--'}
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
-  </div>
-);
-
-const BacktestPanel: React.FC<{
-  data: RecommendationBacktestResponse | null;
-  loading: boolean;
-  error: ParsedApiError | null;
-  onRefresh: () => void;
-  text: typeof TEXT.zh;
-}> = ({ data, loading, error, onRefresh, text }) => {
-  if (error) {
-    return <ApiErrorAlert error={error} />;
+const StatusBadge: React.FC<{ live: WeeklyLiveItem; window: WeeklyTradeWindow; text: Lang }> = ({
+  live,
+  window,
+  text,
+}) => {
+  if (!window.isBuyReached) {
+    return <Badge variant="warning">{text.statusPending}</Badge>;
   }
-  if (loading && !data) {
-    return (
-      <div className="flex items-center justify-center gap-2 py-10 text-sm text-secondary-text">
-        <RefreshCw className="h-4 w-4 animate-spin" />
-        {text.loading}
-      </div>
-    );
+  if (live.available) {
+    return <Badge variant="success">{text.statusLive}</Badge>;
   }
-  if (!data || data.items.length === 0) {
-    return <EmptyState title={text.backtestEmpty} className="border-dashed py-8" />;
-  }
-  const s = data.summary;
+  return <Badge variant="default">{text.statusMissing}</Badge>;
+};
+
+// ============== Trade window banner ==============
+
+const TradeWindowBanner: React.FC<{ window: WeeklyTradeWindow; text: Lang }> = ({ window, text }) => {
+  const pending = window.status === 'pending';
+  const accent = pending ? 'border-amber-500/30 bg-amber-500/5' : 'border-emerald-500/30 bg-emerald-500/5';
+  const statusText =
+    window.status === 'pending' ? text.windowPending : window.status === 'buy_today' ? text.windowBuyToday : text.windowHolding;
+  const statusColor = pending ? 'text-amber-400' : 'text-emerald-400';
   return (
-    <div className="flex flex-col gap-4 animate-fade-in">
-      {/* Strategy info row */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/40 bg-elevated/30 px-3 py-2 text-xs text-secondary-text">
-        <Calendar className="h-3.5 w-3.5 text-cyan" />
-        <span>
-          <span className="text-foreground">{text.backtestBuyDate}：</span>
-          {data.actualBuyDate}
-        </span>
-        <span className="mx-1 hidden h-3 w-px bg-border/60 sm:inline-block" />
-        <span className="hidden sm:inline">
-          <span className="text-foreground">{text.backtestStrategy}：</span>
-          {data.strategyNote}
+    <div className={`flex flex-col gap-3 rounded-2xl border px-4 py-3 ${accent}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <CalendarClock className={`h-4 w-4 ${statusColor}`} />
+        <span className="text-sm font-semibold text-foreground">{text.windowTitle}</span>
+        <Badge variant={pending ? 'warning' : 'success'}>{statusText}</Badge>
+        <span className="ml-auto text-[11px] text-secondary-text">
+          {pending ? text.windowHintPending : text.windowHintLive}
         </span>
       </div>
-
-      {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-6">
-        <StatCard tone="primary" label={text.btSummaryTotal} value={s.total} hint={`有效 ${s.withData}`} />
-        <StatCard
-          label={text.btSummaryAvg1}
-          value={<span className={s.avg1dPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(s.avg1dPct > 0 ? '+' : '') + s.avg1dPct.toFixed(2) + '%'}</span>}
-          hint={`胜率 ${(s.winRate1d * 100).toFixed(0)}%`}
-        />
-        <StatCard
-          label={text.btSummaryAvg3}
-          value={<span className={s.avg3dPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(s.avg3dPct > 0 ? '+' : '') + s.avg3dPct.toFixed(2) + '%'}</span>}
-          hint={`胜率 ${(s.winRate3d * 100).toFixed(0)}%`}
-        />
-        <StatCard
-          label={text.btSummaryAvg5}
-          value={<span className={s.avgWkPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(s.avgWkPct > 0 ? '+' : '') + s.avgWkPct.toFixed(2) + '%'}</span>}
-          hint={`胜率 ${(s.winRateWk * 100).toFixed(0)}%`}
-        />
-        <StatCard
-          label={text.btSummaryBest}
-          value={<span className="text-rose-400">+{s.best1dPct.toFixed(2)}%</span>}
-          icon={<TrendingUp className="h-4 w-4" />}
-        />
-        <StatCard
-          label={text.btSummaryWorst}
-          value={<span className="text-emerald-400">{s.worst1dPct.toFixed(2)}%</span>}
-          icon={<TrendingDown className="h-4 w-4" />}
-        />
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
+        <div className="flex flex-col">
+          <span className="text-[11px] uppercase tracking-wider text-secondary-text">{text.windowBuy}</span>
+          <span className="font-mono text-sm font-semibold text-foreground">{window.buyDate}</span>
+        </div>
+        <div className="flex flex-col">
+          <span className="text-[11px] uppercase tracking-wider text-secondary-text">{text.windowSell}</span>
+          <span className="font-mono text-sm font-semibold text-foreground">{window.sellDate}</span>
+        </div>
+        <div className="flex flex-col">
+          <span className="text-[11px] uppercase tracking-wider text-secondary-text">{text.windowNext}</span>
+          <span className="font-mono text-sm font-semibold text-foreground">{window.nextBuyDate}</span>
+        </div>
       </div>
+    </div>
+  );
+};
 
-      {/* Backtest table */}
-      <div className="overflow-x-auto rounded-xl border border-border/40">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border/60 bg-elevated/40 text-left text-xs uppercase tracking-wider text-secondary-text">
-              <th className="py-2.5 pl-3 pr-2">{text.btColCode}</th>
-              <th className="py-2.5 pr-2 text-center">{text.btColScore}</th>
-              <th className="py-2.5 pr-2 text-center">{text.btColBuyDate}</th>
-              <th className="py-2.5 pr-2 text-center">买入价来源</th>
-              <th className="py-2.5 pr-2 text-right">{text.btColBuyPrice}</th>
-              <th className="py-2.5 pr-2 text-right">{text.btColAuction}</th>
-              <th className="py-2.5 pr-2 text-right">{text.btColOpen}</th>
-              <th className="py-2.5 pr-2 text-right">{text.btColR1}</th>
-              <th className="py-2.5 pr-2 text-right">{text.btColR3}</th>
-              <th className="py-2.5 pr-2 text-right">{text.btColR5}</th>
-              <th className="py-2.5 pr-2 text-center">{text.btColKline}</th>
-              <th className="py-2.5 pr-3 text-center">{text.btColVol}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.items.map((it: BacktestStockItem) => (
+// ============== Combined ranking + live table ==============
+
+const CombinedTable: React.FC<{
+  items: RecommendationItem[];
+  live: WeeklyLiveItem[];
+  window: WeeklyTradeWindow;
+  text: Lang;
+  scoreWidth: (s: number) => number;
+}> = ({ items, live, window, text, scoreWidth }) => {
+  const liveByCode = useMemo(() => {
+    const m = new Map<string, WeeklyLiveItem>();
+    for (const l of live) m.set(l.code.toUpperCase(), l);
+    return m;
+  }, [live]);
+
+  return (
+    <div className="overflow-x-auto rounded-xl border border-border/40">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-border/60 bg-elevated/40 text-left text-xs uppercase tracking-wider text-secondary-text">
+            <th className="w-10 py-2.5 pl-3 pr-2 text-center">{text.colRank}</th>
+            <th className="py-2.5 pr-3">{text.colName}</th>
+            <th className="py-2.5 pr-3">{text.colIndustry}</th>
+            <th className="py-2.5 pr-3">{text.colScore}</th>
+            <th className="py-2.5 pr-3 text-right">{text.colWeight}</th>
+            <th className="py-2.5 pr-3 text-center">{text.colBuySell}</th>
+            <th className="py-2.5 pr-2 text-right">{text.colLast}</th>
+            <th className="py-2.5 pr-2 text-right">{text.colR1}</th>
+            <th className="py-2.5 pr-2 text-right">{text.colR3}</th>
+            <th className="py-2.5 pr-2 text-right">{text.colR5}</th>
+            <th className="py-2.5 pr-3 text-center">{text.colStatus}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((it) => {
+            const key = it.code.toUpperCase();
+            const lv = liveByCode.get(key);
+            const pending = !window.isBuyReached;
+            const lastPrice = lv?.lastPrice != null ? lv.lastPrice : it.lastClose;
+            return (
               <tr key={it.code} className="border-b border-border/20 transition-colors hover:bg-elevated/30">
-                <td className="py-2.5 pl-3 pr-2 align-middle">
+                <td className="py-2.5 pl-3 pr-2 text-center align-middle">
+                  <RankMedal rank={it.rank} />
+                </td>
+                <td className="py-2.5 pr-3 align-middle">
                   <div className="flex flex-col">
                     <span className="font-medium text-foreground">{it.stockName || it.code}</span>
                     <span className="font-mono text-[11px] text-secondary-text">{it.code}</span>
                   </div>
                 </td>
-                <td className="py-2.5 pr-2 text-center align-middle">
-                  <ScorePct value={it.strengthScore} />
+                <td className="py-2.5 pr-3 align-middle">
+                  {it.industry ? <Badge variant="default">{it.industry}</Badge> : <span className="text-xs text-secondary-text">--</span>}
                 </td>
-                <td className="py-2.5 pr-2 text-center align-middle font-mono text-xs text-secondary-text">
-                  {it.buyDate}
+                <td className="py-2.5 pr-3 align-middle">
+                  <div className="flex items-center gap-2">
+                    <div className="relative h-2 w-24 overflow-hidden rounded-full bg-elevated/60">
+                      <div
+                        className="absolute left-0 top-0 h-full rounded-full"
+                        style={{ width: `${scoreWidth(it.strengthScore)}%`, background: SCORE_COLOR, opacity: 0.8 }}
+                      />
+                    </div>
+                    <span className="font-mono text-xs text-foreground">{it.strengthScore.toFixed(3)}</span>
+                  </div>
                 </td>
-                <td className="py-2.5 pr-2 text-center align-middle">
-                  {it.priceSource === '集合竞价' ? (
-                    <Badge variant="success">{it.priceSource}</Badge>
-                  ) : (
-                    <span className="text-xs text-secondary-text">{it.priceSource || '--'}</span>
-                  )}
-                </td>
-                <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-foreground tabular-nums">
-                  {it.buyPrice != null ? it.buyPrice.toFixed(2) : '--'}
-                </td>
-                <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-secondary-text tabular-nums">
-                  {it.auctionPrice != null ? it.auctionPrice.toFixed(2) : '--'}
-                </td>
-                <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-secondary-text tabular-nums">
-                  {it.openPrice != null ? it.openPrice.toFixed(2) : '--'}
-                </td>
-                <td className="py-2.5 pr-2 text-right align-middle"><ReturnCell value={it.return1dPct} /></td>
-                <td className="py-2.5 pr-2 text-right align-middle"><ReturnCell value={it.return3dPct} /></td>
-                <td className="py-2.5 pr-2 text-right align-middle"><ReturnCell value={it.returnWkPct} /></td>
-                <td className="py-2.5 pr-2 text-center align-middle">
-                  <KLineChip primary={it.klineJudgment} secondary={it.klineSecondary} />
+                <td className="py-2.5 pr-3 text-right align-middle">
+                  <span className="inline-flex items-center gap-1 font-mono text-xs font-medium text-[hsl(var(--primary))]">
+                    <TrendingUp className="h-3 w-3" />
+                    {pct(it.suggestedWeight)}
+                  </span>
                 </td>
                 <td className="py-2.5 pr-3 text-center align-middle">
-                  <VolumeChip status={it.volumeStatus} />
+                  <span className="font-mono text-[11px] text-secondary-text">
+                    {window.buyDate.slice(5)} → {window.sellDate.slice(5)}
+                  </span>
+                </td>
+                <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-foreground tabular-nums">
+                  {lastPrice != null ? lastPrice.toFixed(2) : '--'}
+                </td>
+                <td className="py-2.5 pr-2 text-right align-middle">
+                  <ReturnCell value={lv?.return1dPct} pending={pending && !lv?.available} />
+                </td>
+                <td className="py-2.5 pr-2 text-right align-middle">
+                  <ReturnCell value={lv?.return3dPct} pending={pending && !lv?.available} />
+                </td>
+                <td className="py-2.5 pr-2 text-right align-middle">
+                  <ReturnCell value={lv?.returnWkPct} pending={pending && !lv?.available} />
+                </td>
+                <td className="py-2.5 pr-3 text-center align-middle">
+                  {lv ? <StatusBadge live={lv} window={window} text={text} /> : <span className="text-xs text-secondary-text">--</span>}
                 </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="flex items-center justify-between gap-2 text-xs text-secondary-text">
-        <span>{data.disclaimer}</span>
-        <Button variant="ghost" size="sm" onClick={onRefresh} isLoading={loading}>
-          <RefreshCw className="h-3.5 w-3.5" />
-          重新计算
-        </Button>
-      </div>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 };
@@ -440,17 +332,9 @@ const RecommendationsPage: React.FC = () => {
   const [topN, setTopN] = useState(20);
   const [industryCap, setIndustryCap] = useState<number | null>(3);
   const [industries, setIndustries] = useState<IndustryOption[]>([]);
-  const [data, setData] = useState<RecommendationsResponse | null>(null);
+  const [data, setData] = useState<WeeklyRecommendationResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<ParsedApiError | null>(null);
-
-  // Backtest state
-  const [activeTab, setActiveTab] = useState<'list' | 'backtest'>('list');
-  const [backtestData, setBacktestData] = useState<RecommendationBacktestResponse | null>(null);
-  const [backtestLoading, setBacktestLoading] = useState(false);
-  const [backtestError, setBacktestError] = useState<ParsedApiError | null>(null);
-  /** 用 ref 标记"本组参数下是否已经请求过"，避免请求失败时 setState 触发的死循环 */
-  const backtestLoadedKeyRef = useRef<string>('');
 
   useEffect(() => {
     document.title = text.documentTitle;
@@ -475,7 +359,7 @@ const RecommendationsPage: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const res = await predictionApi.recommendations({
+      const res = await predictionApi.recommendationsWeekly({
         industry: industry || undefined,
         topN,
         industryCap: industry ? null : industryCap,
@@ -488,35 +372,6 @@ const RecommendationsPage: React.FC = () => {
       setIsLoading(false);
     }
   }, [industry, topN, industryCap]);
-
-  const fetchBacktest = useCallback(async (force = false) => {
-    const cacheKey = `${industry || ''}|${topN}`;
-    if (!force && backtestLoadedKeyRef.current === cacheKey) {
-      return; // 当前参数组合已请求过（无论成功失败），不再自动重试
-    }
-    backtestLoadedKeyRef.current = cacheKey;
-    setBacktestLoading(true);
-    setBacktestError(null);
-    try {
-      const res = await predictionApi.recommendationsBacktest({
-        industry: industry || undefined,
-        topN,
-      });
-      setBacktestData(res);
-    } catch (err) {
-      setBacktestError(getParsedApiError(err));
-      setBacktestData(null);
-    } finally {
-      setBacktestLoading(false);
-    }
-  }, [industry, topN]);
-
-  // 切换到「收益回测」Tab 时，若当前参数未请求过则触发一次
-  useEffect(() => {
-    if (activeTab === 'backtest') {
-      void fetchBacktest(false);
-    }
-  }, [activeTab, fetchBacktest]);
 
   useEffect(() => {
     void fetchBoard();
@@ -535,6 +390,8 @@ const RecommendationsPage: React.FC = () => {
     const span = maxScore - minScore || 1;
     return 25 + ((score - minScore) / span) * 75; // keep a visible minimum bar
   };
+
+  const liveSummary = data?.liveSummary;
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 px-3 py-4 sm:px-4">
@@ -614,16 +471,38 @@ const RecommendationsPage: React.FC = () => {
 
       {data ? (
         <div className="flex flex-col gap-5 animate-fade-in">
-          {/* Summary */}
+          {/* Summary cards */}
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <StatCard tone="primary" label={text.scope} value={data.scope} hint={`${text.asOf} ${data.asOfDate ?? '--'}`} />
-            <StatCard label={text.universe} value={data.universeSize} hint={data.industryCap ? `${text.capLabel} ≤ ${data.industryCap}` : ''} />
-            <StatCard tone="success" label={text.picked} value={data.count} hint={text.unit} />
+            <StatCard label={text.picked} value={data.count} hint={text.unit} />
             <StatCard
+              tone="success"
               label={text.industriesCovered}
               value={new Set(data.items.map((i) => i.industry).filter(Boolean)).size}
             />
+            <StatCard
+              label={text.liveAvg5}
+              value={
+                <span className={liveSummary && liveSummary.avgWkPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>
+                  {(liveSummary && liveSummary.avgWkPct > 0 ? '+' : '') + (liveSummary ? liveSummary.avgWkPct.toFixed(2) : '0.00') + '%'}
+                </span>
+              }
+              hint={data.tradeWindow.isBuyReached ? `${text.liveWin5} ${liveSummary ? (liveSummary.winRateWk * 100).toFixed(0) : 0}%` : text.windowPending}
+            />
           </div>
+
+          {/* Trade window banner */}
+          <TradeWindowBanner window={data.tradeWindow} text={text} />
+
+          {/* Live returns overview strip */}
+          {data.tradeWindow.isBuyReached && liveSummary ? (
+            <div className="grid grid-cols-3 gap-2.5 lg:grid-cols-6">
+              <StatCard label={text.liveAvg1} value={<span className={liveSummary.avg1dPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(liveSummary.avg1dPct > 0 ? '+' : '') + liveSummary.avg1dPct.toFixed(2) + '%'}</span>} hint={`${text.liveWin1} ${(liveSummary.winRate1d * 100).toFixed(0)}%`} />
+              <StatCard label={text.liveAvg3} value={<span className={liveSummary.avg3dPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(liveSummary.avg3dPct > 0 ? '+' : '') + liveSummary.avg3dPct.toFixed(2) + '%'}</span>} hint={`${text.liveWin3} ${(liveSummary.winRate3d * 100).toFixed(0)}%`} />
+              <StatCard label={text.liveAvg5} value={<span className={liveSummary.avgWkPct >= 0 ? 'text-rose-400' : 'text-emerald-400'}>{(liveSummary.avgWkPct > 0 ? '+' : '') + liveSummary.avgWkPct.toFixed(2) + '%'}</span>} hint={`${text.liveWin5} ${(liveSummary.winRateWk * 100).toFixed(0)}%`} />
+              <StatCard tone="primary" label={text.liveTitle} value={liveSummary.withData} hint={`${text.picked} ${liveSummary.total}`} />
+            </div>
+          ) : null}
 
           {/* Strategy hint */}
           {data.strategy ? (
@@ -655,61 +534,20 @@ const RecommendationsPage: React.FC = () => {
             </Card>
           ) : null}
 
-          {/* Tabbed Card: 推荐列表 / 收益回测 */}
+          {/* Combined table: 推荐列表 + 实时收益（单页，不再分 Tab） */}
           <Card padding="md">
-            {/* Tab Bar */}
-            <div
-              className="-mx-4 mb-4 flex items-center gap-1 border-b border-border/40 px-4"
-              role="tablist"
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'list'}
-                onClick={() => setActiveTab('list')}
-                className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-semibold transition-colors ${
-                  activeTab === 'list'
-                    ? 'border-cyan text-cyan'
-                    : 'border-transparent text-secondary-text hover:text-foreground'
-                }`}
-              >
-                <ListChecks className="h-4 w-4" />
-                {text.tabList}
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeTab === 'backtest'}
-                onClick={() => setActiveTab('backtest')}
-                className={`-mb-px inline-flex items-center gap-1.5 border-b-2 px-3 py-2.5 text-sm font-semibold transition-colors ${
-                  activeTab === 'backtest'
-                    ? 'border-cyan text-cyan'
-                    : 'border-transparent text-secondary-text hover:text-foreground'
-                }`}
-              >
-                <BarChart3 className="h-4 w-4" />
-                {text.tabBacktest}
-              </button>
-              <div className="ml-auto pb-2 text-xs text-secondary-text">
-                {text.listHint}
-              </div>
+            <div className="-mx-4 mb-3 flex items-center gap-2 border-b border-border/40 px-4 pb-3">
+              <ListChecks className="h-4 w-4 text-cyan" />
+              <span className="text-sm font-semibold text-foreground">{text.title}</span>
+              <span className="ml-auto text-xs text-secondary-text">{text.listHint}</span>
             </div>
-
-            {activeTab === 'list' ? (
-              <RankingTable
-                items={data.items}
-                text={text}
-                scoreWidth={scoreWidth}
-              />
-            ) : (
-              <BacktestPanel
-                data={backtestData}
-                loading={backtestLoading}
-                error={backtestError}
-                onRefresh={() => void fetchBacktest(true)}
-                text={text}
-              />
-            )}
+            <CombinedTable
+              items={data.items}
+              live={data.live}
+              window={data.tradeWindow}
+              text={text}
+              scoreWidth={scoreWidth}
+            />
           </Card>
 
           {/* Disclaimer */}

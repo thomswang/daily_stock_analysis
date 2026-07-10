@@ -13,6 +13,7 @@ from .code_list import BackfillError
 from .ledger import ProgressLedger
 from .segment_planner import iso as _iso
 from .segment_planner import parse_date
+from .throttle import DEFAULT_JITTER
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +94,8 @@ def run_backfill_job(
         logger.info(start_log, total, start_date, end_date, mode, sleep, force)
     else:
         logger.info(
-            "开始 %s 回填：%d 只，区间 %s ~ %s，分段=%s，限流=%.2fs，force=%s",
-            dataset, total, start_date, end_date, mode, sleep, force,
+            "开始 %s 回填：%d 只，区间 %s ~ %s，分段=%s，限流=%.2fs(±%.0f%%抖动)，force=%s",
+            dataset, total, start_date, end_date, mode, sleep, DEFAULT_JITTER * 100, force,
         )
 
     stats: Dict[str, Any] = {

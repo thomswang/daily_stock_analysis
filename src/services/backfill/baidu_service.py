@@ -12,6 +12,7 @@ from typing import Any, Callable, Dict, List, Optional
 from .runner import run_backfill_job
 from .segment_planner import is_no_data_error, plan_segments
 from .segment_planner import iso as _iso
+from .throttle import jittered_sleep
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +210,7 @@ class BaiduBackfillService:
                 code, seg_start, seg_end, retry=retry, ktype=ktype, full=need_full
             )
             if sleep > 0:
-                time.sleep(sleep)
+                jittered_sleep(sleep)
             if err is not None:
                 if got_any:
                     logger.warning(

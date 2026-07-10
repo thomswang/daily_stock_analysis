@@ -14,6 +14,7 @@ from data_provider.westock_fields import DEFAULT_KLINE_ADJ
 from .runner import run_backfill_job
 from .segment_planner import is_no_data_error, plan_segments
 from .segment_planner import iso as _iso
+from .throttle import jittered_sleep
 
 logger = logging.getLogger(__name__)
 
