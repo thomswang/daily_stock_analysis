@@ -54,6 +54,7 @@ const TEXT = {
     colScore: '强弱分',
     colWeight: '建议权重',
     colBuySell: '买入 → 卖出',
+    colBuy: '买入价',
     colLast: '最新价',
     colR1: '1日',
     colR3: '3日',
@@ -118,6 +119,7 @@ const TEXT = {
     colScore: 'Strength',
     colWeight: 'Weight',
     colBuySell: 'Buy → Sell',
+    colBuy: 'Buy',
     colLast: 'Last',
     colR1: '1D',
     colR3: '3D',
@@ -291,6 +293,7 @@ const CombinedTable: React.FC<{
             <th className="py-2.5 pr-3">{text.colScore}</th>
             <th className="py-2.5 pr-3 text-right">{text.colWeight}</th>
             <th className="py-2.5 pr-3 text-center">{text.colBuySell}</th>
+            <th className="py-2.5 pr-2 text-right">{text.colBuy}</th>
             <th className="py-2.5 pr-2 text-right">{text.colLast}</th>
             <th className="py-2.5 pr-2 text-right">{text.colR1}</th>
             <th className="py-2.5 pr-2 text-right">{text.colR3}</th>
@@ -339,6 +342,13 @@ const CombinedTable: React.FC<{
                   <span className="font-mono text-[11px] text-secondary-text">
                     {window.buyDate.slice(5)} → {window.sellDate.slice(5)}
                   </span>
+                </td>
+                <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-secondary-text tabular-nums">
+                  {pending && !lv?.available
+                    ? '待买入'
+                    : lv?.buyPrice != null
+                      ? lv.buyPrice.toFixed(2)
+                      : '--'}
                 </td>
                 <td className="py-2.5 pr-2 text-right align-middle font-mono text-xs text-foreground tabular-nums">
                   {lastPrice != null ? lastPrice.toFixed(2) : '--'}
