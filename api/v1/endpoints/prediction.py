@@ -37,6 +37,7 @@ from api.v1.schemas.prediction import (
     SnapshotRunsResponse,
     WeeklyRecommendationResponse,
 )
+from src.repositories.training_bars import load_training_bar_df
 from src.services.prediction_service import PredictionError, predict_stock, rank_stocks
 
 logger = logging.getLogger(__name__)
@@ -332,7 +333,8 @@ def prediction_recommendations_backtest(
         if not code:
             continue
 
-        kdf = stock_repo.load_kline_df(code, actual_buy_date, end_window)
+        # 统一经训练/预测数据网关取数（默认 stock_daily_ohlcv，不回退），与训练口径一致
+        kdf = load_training_bar_df(code, actual_buy_date, end_window)
         if kdf is None or kdf.empty:
             items.append(BacktestStockItem(
                 code=code,
@@ -449,7 +451,8 @@ def _next_trading_day(stock_repo, target_date, max_lookback: int = 7):
     probe_code = "000300.SH"
     end = target_date + timedelta(days=max_lookback)
     try:
-        df = stock_repo.load_kline_df(probe_code, target_date, end)
+        # 交易日历探针同样走网关，保持与训练/预测口径一致
+        df = load_training_bar_df(probe_code, target_date, end)
         if df is not None and not df.empty:
             import pandas as pd
             df = df.sort_values("date")

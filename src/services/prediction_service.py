@@ -888,31 +888,17 @@ def _rows_to_df(rows: list, quote_by_date: Optional[Dict[date, Any]] = None) -> 
 
 
 def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
-    """从本地缓存读取日线数据（复用主分析/回测已落的数据）。
+    """从本地缓存读取单票日线：统一经「训练/预测行情数据网关」取数。
 
-    优先读 stock_daily_kline（backfill.py kline 回填的数据，含 close 列）；
-    若 kline 表无数据则回退到 stock_daily（旧表，可能为空或缺 close 列）。
+    默认源 stock_daily_ohlcv（自带换手率，不回退）；网关是全项目唯一取数路径，
+    此处仅做薄委托，不再直连仓储或多表回退。
     """
     try:
-        from datetime import date as _date
+        from src.repositories.stock_repo import compute_training_date_range
+        from src.repositories.training_bars import load_training_bar_df
 
-        from src.repositories.stock_repo import StockRepository
-
-        repo = StockRepository()
-        end = _date.today()
-        # 多取一些日历日，保证 rolling/dropna 后仍有足够交易日样本
-        start = end - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
-
-        # 优先从 stock_daily_kline 读（前复权 OHLCV，数据实际所在）
-        df = repo.load_kline_df(stock_code, start, end)
-        if df is not None and not df.empty:
-            return df
-
-        # 回退到 stock_daily（旧表，兼容历史数据）
-        rows = repo.get_range(stock_code, start, end)
-        quote_rows = repo.get_quote_range(stock_code, start, end)
-        quote_by_date = {r.date: r for r in quote_rows}
-        return _rows_to_df(rows, quote_by_date) if rows else pd.DataFrame()
+        start, end = compute_training_date_range(lookback_days)
+        return load_training_bar_df(stock_code, start, end)
     except Exception as exc:  # noqa: BLE001 - 缓存读取失败不应中断预测
         logger.debug("读取 %s 的本地缓存失败，将走网络: %s", stock_code, exc)
         return pd.DataFrame()
@@ -921,39 +907,17 @@ def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
 def preload_training_cache(
     symbols: List[str], lookback_days: int,
 ) -> Dict[str, pd.DataFrame]:
-    """批量预加载多只股票的本地缓存日线，供离线训练（refresh=False）一次读取。
+    """批量预加载多只股票日线，供离线训练（refresh=False）一次性读取。
 
-    ── 本次新增：解决 model_training_service 导入但未定义的函数 ──
-    全市场训练（--all）涉及数千只票，逐票 _load_cached_df 会产生数千次 SQLite
-    往返（每次 open→query→close），成为训练瓶颈。本函数优先尝试 repo 的 bulk
-    方法一次性读取全量数据再按 code 分组；repo 未实现 bulk 时自动退回逐票读取。
-
-    比逐票 _load_cached_df 快得多：只打开一次 SQLite 连接做全量扫描，再按 code 分组。
-    失败的票跳过（返回字典中不含该 key），调用方按缺失处理。
+    经「训练/预测行情数据网关」一次批量取数（默认 stock_daily_ohlcv，不回退），
+    只打开一次 SQLite 连接做全量扫描再按 code 分组，避免逐票往返成为训练瓶颈。
+    以裸码 upper 为 key，与 model_training_service 的 df_cache[code.upper()] 对齐命中。
     """
-    from datetime import date as _date
+    from src.repositories.stock_repo import compute_training_date_range
+    from src.repositories.training_bars import load_training_bars_bulk
 
-    from src.repositories.stock_repo import StockRepository
-
-    end = _date.today()
-    start = end - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
-    repo = StockRepository()
-
-    # 优先用 load_kline_bulk 批量读 stock_daily_kline（数据实际所在）
-    try:
-        cache = repo.load_kline_bulk(symbols, start, end)
-        if cache:
-            return cache
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("load_kline_bulk 失败，退回逐票读取: %s", exc)
-
-    # 回退到逐票读取
-    cache: Dict[str, pd.DataFrame] = {}
-    for code in symbols:
-        df = _load_cached_df(code, lookback_days)
-        if df is not None and not df.empty:
-            cache[code.strip().upper()] = df
-    return cache
+    start, end = compute_training_date_range(lookback_days)
+    return load_training_bars_bulk(symbols, start, end)
 
 
 def _is_cache_fresh(df: pd.DataFrame, max_stale_days: int = 4) -> bool:
@@ -1045,7 +1009,7 @@ _MARKET_DF_CACHE: Dict[str, pd.DataFrame] = {}
 def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
     """读取大盘指数日线（date, close）供环境特征使用；进程内缓存，避免逐票重复查库。
 
-    优先从 stock_daily_kline 读取（数据实际所在）；回退到 stock_daily（旧表）。
+    统一经「训练/预测行情数据网关」取数（默认 stock_daily_ohlcv，不回退）；
     查不到则返回空 DataFrame，build_features 会据此把大盘特征中性填 0。
     """
     if index_code in _MARKET_DF_CACHE:
@@ -1054,20 +1018,11 @@ def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
     try:
         from datetime import date as _date
 
-        from src.repositories.stock_repo import StockRepository
+        from src.repositories.training_bars import load_training_bar_df
 
-        repo = StockRepository()
-        # 优先从 stock_daily_kline 读
-        kdf = repo.load_kline_df(index_code, _date(2000, 1, 1), _date.today())
-        if kdf is not None and not kdf.empty:
-            df = kdf[["date", "close"]].copy()
-            df = df.sort_values("date").reset_index(drop=True)
-        else:
-            # 回退到 stock_daily
-            rows = repo.get_range(index_code, _date(2000, 1, 1), _date.today())
-            if rows:
-                df = pd.DataFrame([{"date": r.date, "close": r.close} for r in rows])
-                df = df.sort_values("date").reset_index(drop=True)
+        bars = load_training_bar_df(index_code, _date(2000, 1, 1), _date.today())
+        if bars is not None and not bars.empty and "close" in bars.columns:
+            df = bars[["date", "close"]].sort_values("date").reset_index(drop=True)
     except Exception as exc:  # noqa: BLE001 - 缺指数不应中断预测/训练
         logger.debug("加载大盘指数 %s 失败（将中性处理）: %s", index_code, exc)
     if df.empty:

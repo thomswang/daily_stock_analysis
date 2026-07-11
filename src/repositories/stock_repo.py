@@ -512,3 +512,115 @@ class StockRepository:
         # load_kline_bulk 以裸码(000001)为 key，票池常传带后缀全码(000001.SZ)，
         # 全码未命中时回退按裸码查，避免误判「本地无数据」而回退联网。
         return bulk.get(key.split(".")[0], pd.DataFrame())
+
+    # 输出列契约：与训练/预测特征层（build_features）对齐。turnoverratio 在此
+    # 重命名为 turnover_rate，使换手率特征（turnover_norm/turnover_rel）激活。
+    _OHLCV_OUT_COLS = [
+        "date", "open", "high", "low", "close", "volume", "amount", "turnover_rate",
+    ]
+
+    def load_ohlcv_bulk(
+        self,
+        codes: List[str],
+        start_date: date,
+        end_date: date,
+        *,
+        batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
+        ktype: str = "1",
+        adj_type: str = "qfq",
+    ) -> Dict[str, pd.DataFrame]:
+        """批量读 stock_daily_ohlcv（源无关通用层，供训练/预测/打分统一取数）。
+
+        相比 stock_daily_kline，本表单表自带 turnoverratio（换手率）/amount（成交额），
+        故加载时把 turnoverratio 重命名为 turnover_rate，激活换手率类特征。
+
+        约定（与 load_kline_bulk 对齐，保证 df_cache 命中）：
+          - 裸码/带后缀(.SH/.SZ/.BJ)兼容查询，结果以「裸码 upper」为 key；
+          - 默认过滤 ktype='1'（日线）、adj_type='qfq'（前复权）；
+          - 唯一键含 data_source，同 (code,date) 可能多行，按 date 去重(keep=last)，
+            避免重复交易日污染 rolling 特征。
+        """
+        norm_codes = _normalize_codes(codes)
+        if not norm_codes:
+            return {}
+
+        _SUFFIXES = (".SH", ".SZ", ".BJ")
+        query_codes: List[str] = []
+        _seen: set = set()
+        for nc in norm_codes:
+            cands = [nc] if "." in nc else [nc, *(nc + s for s in _SUFFIXES)]
+            for c in cands:
+                if c not in _seen:
+                    _seen.add(c)
+                    query_codes.append(c)
+
+        batch_size = max(1, int(batch_size))
+        result: Dict[str, pd.DataFrame] = {}
+        try:
+            with self.db.get_session() as session:
+                for i in range(0, len(query_codes), batch_size):
+                    batch = query_codes[i : i + batch_size]
+                    stmt = (
+                        select(StockDailyOhlcv)
+                        .where(
+                            StockDailyOhlcv.code.in_(batch),
+                            StockDailyOhlcv.ktype == ktype,
+                            StockDailyOhlcv.adj_type == adj_type,
+                            StockDailyOhlcv.date >= start_date,
+                            StockDailyOhlcv.date <= end_date,
+                        )
+                        .order_by(StockDailyOhlcv.code, StockDailyOhlcv.date)
+                    )
+                    rows = session.execute(stmt).scalars().all()
+                    if not rows:
+                        continue
+                    records: List[Dict[str, Any]] = []
+                    for row in rows:
+                        records.append({
+                            "code": row.code,
+                            "date": row.date,
+                            "open": row.open,
+                            "high": row.high,
+                            "low": row.low,
+                            "close": row.close,
+                            "volume": row.volume,
+                            "amount": row.amount,
+                            # 换手率：ohlcv 列名 turnoverratio → 统一契约 turnover_rate
+                            "turnover_rate": row.turnoverratio,
+                        })
+                    chunk = pd.DataFrame(records)
+                    chunk["code"] = chunk["code"].astype(str).str.upper()
+                    for code, group in chunk.groupby("code", sort=False):
+                        g = (
+                            group.drop(columns=["code"])
+                            .sort_values("date")
+                            # 跨 data_source 同一交易日去重，保留最后一条
+                            .drop_duplicates(subset=["date"], keep="last")
+                            .reset_index(drop=True)
+                        )
+                        # 以裸代码为 key，兼容上层 df_cache[裸code] 命中
+                        bare = str(code).split(".")[0].upper()
+                        result[bare] = g
+        except Exception as exc:
+            logger.error("批量读 ohlcv 失败: %s", exc)
+            raise
+        return result
+
+    def load_ohlcv_df(
+        self,
+        code: str,
+        start_date: date,
+        end_date: date,
+        *,
+        ktype: str = "1",
+        adj_type: str = "qfq",
+    ) -> pd.DataFrame:
+        """单票读 stock_daily_ohlcv（内部走 load_ohlcv_bulk 复用同一取数与去重逻辑）。"""
+        bulk = self.load_ohlcv_bulk(
+            [code], start_date, end_date, batch_size=1,
+            ktype=ktype, adj_type=adj_type,
+        )
+        key = (code or "").strip().upper()
+        if key in bulk:
+            return bulk[key]
+        return bulk.get(key.split(".")[0], pd.DataFrame())
