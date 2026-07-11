@@ -14,7 +14,7 @@
 1. **一个全局模型**：跨多只股票汇聚样本训练，而非每票一个模型。这才是
    "训练一个走势预测模型"，样本更多、更稳健，也便于统一版本管理。
 2. **复用现有基建**：特征工程直接复用 prediction_service.build_features；
-   数据读取复用 _load_daily_df 的读透缓存（与主分析/回测共享 stock_daily）。
+   数据读取统一经本地 ohlcv 网关（preload_training_cache，纯本地、绝不联网）。
 3. **模型参数入库**：模型极小（权重+偏置+标准化统计量 或 LightGBM 文本），
    直接以 JSON 存 DB，省去 invest_dojo 的 MinIO/对象存储依赖。
 
@@ -44,9 +44,7 @@ from src.services.prediction_service import (
     DEFAULT_LABEL_HORIZON,
     DEFAULT_LABEL_THRESHOLD,
     FEATURE_ORDER,
-    PredictionError,
     _align_market_close,
-    _load_daily_df,
     build_features,
     load_market_df,
     make_labels,
@@ -84,7 +82,6 @@ class ModelTrainingService:
         symbols: List[str],
         lookback_days: int,
         *,
-        refresh: bool,
         horizon: int = DEFAULT_LABEL_HORIZON,
         threshold: float = DEFAULT_LABEL_THRESHOLD,
         label_mode: str = "absolute",
@@ -147,36 +144,33 @@ class ModelTrainingService:
         used_symbols: List[str] = []
         all_dates: List[Any] = []
 
-        # 纯读本地库时：一次批量 JOIN 预加载，避免 5000×2 次 SQLite 往返
-        df_cache: Dict[str, pd.DataFrame] = {}
-        if not refresh:
+        # ── 训练数据统一经本地 ohlcv 网关一次性批量预读（纯本地、绝不联网）──
+        # 数据窗口：截止=train_end(指定则留出近期做样本外)或最新；起点由 lookback 决定(<=0=全量历史)。
+        # 本地无数据的票直接跳过——训练只用本地回填数据，联网更新由 backfill 流程独立负责；
+        # 不再逐票 _load_daily_df 联网兜底（此前港股/非 A 股代码如 00041 会误触发网络请求）。
+        _cutoff_date = None
+        if train_end is not None:
             try:
-                df_cache = preload_training_cache(symbols, lookback_days)
-            except Exception as exc:  # noqa: BLE001 - 失败则退回逐票读取
-                logger.warning("[train] 批量预读失败，退回逐票模式: %s", exc)
+                _cutoff_date = pd.Timestamp(train_end).date()
+            except Exception:  # noqa: BLE001 - 非法截止时间视为不限制
+                _cutoff_date = None
+        try:
+            df_cache = preload_training_cache(symbols, lookback_days, end_date=_cutoff_date)
+        except Exception as exc:  # noqa: BLE001 - 预读失败则本轮无样本
+            logger.warning("[train] 本地批量预读失败：%s", exc)
+            df_cache = {}
 
         for raw in symbols:
             code = (raw or "").strip()
             if not code:
                 continue
             code_key = code.upper()
-            try:
-                if not refresh and code_key in df_cache:
-                    df = df_cache[code_key]
-                else:
-                    df, _name = _load_daily_df(
-                        code, lookback_days, use_cache=True, refresh=refresh,
-                        resolve_name=False,
-                    )
-            except PredictionError as exc:
-                logger.warning("[train] 跳过 %s：%s", code, exc)
-                continue
-            except Exception as exc:  # noqa: BLE001 - 单票失败不应中断整体训练
-                logger.warning("[train] 获取 %s 数据异常，跳过：%s", code, exc)
-                continue
-
+            # 只取本地网关缓存；带后缀全码(000001.SZ)回退裸码(000001)命中（网关以裸码 upper 为 key）
+            df = df_cache.get(code_key)
             if df is None or df.empty:
-                logger.warning("[train] %s 无数据，跳过", code)
+                df = df_cache.get(code_key.split(".")[0])
+            if df is None or df.empty:
+                logger.info("[train] %s 本地无数据，跳过（训练仅用本地 ohlcv，不联网）", code)
                 continue
 
             # 大盘环境因子：传入指数日线（load_market_df 进程内缓存，只查一次库）
@@ -314,13 +308,14 @@ class ModelTrainingService:
 
         Args:
             symbols: 参与训练的股票代码列表
-            lookback_days: 每只股票的回溯天数（默认1500≈覆盖6年，充分利用长历史）
+            lookback_days: 每只股票回溯天数；<=0 表示全量历史（充分利用长历史）
             model_name: 模型名（同名下按版本管理，新版本自动激活）
             epochs/lr/l2: 训练超参
             horizon: 标签前瞻天数（预测"未来 horizon 日"方向，默认 5，与预测/回测一致）
             threshold: 记为"看涨"所需的最小未来收益（默认 0=纯方向）
             set_active: 训练完成后是否设为激活版本（供预测使用）
-            refresh: 是否联网刷新数据（False 则纯用本地缓存，适合离线补训）
+            train_end: 训练截止时间(YYYY-MM-DD)，只用该日之前数据；不指定则用至最新
+            refresh: 兼容保留参数——训练取数已统一为纯本地 ohlcv，不再触发联网
             notes: 备注
             label_mode: "cross_section"=周度真实交易收益横截面排名(默认，与回测对齐)；
                         "absolute"=绝对涨跌；"relative"=是否跑赢大盘
@@ -334,10 +329,35 @@ class ModelTrainingService:
         if not symbols:
             raise ModelTrainingError("训练股票列表为空")
 
+        # ── 训练仅支持 A 股：过滤非 A 股代码（港股/美股/日韩台等暂不支持）──
+        # 本地 ohlcv 只回填了 A 股；normalize 后为 6 位纯数字即沪深北 A/B 股，
+        # 港股(00041 等 5 位)、美股(字母)、带市场后缀者一律剔除，避免混入无本地数据
+        # 的票刷无用日志/触发联网。此过滤聚合于训练入口，CLI/API/定时各路调用皆受护。
+        from src.services.stock_code_utils import normalize_code
+
+        def _is_a_share(raw: str) -> bool:
+            nc = normalize_code((raw or "").strip())
+            return bool(nc and nc.isdigit() and len(nc) == 6)
+
+        _a_symbols = [c for c in symbols if _is_a_share(c)]
+        _dropped = len(symbols) - len(_a_symbols)
+        if _dropped:
+            logger.info(
+                "[train] 训练仅支持 A 股，已过滤非 A 股代码 %d 只（剩余 %d 只）",
+                _dropped, len(_a_symbols),
+            )
+        symbols = _a_symbols
+        if not symbols:
+            raise ModelTrainingError("过滤后无 A 股代码可训练（训练仅支持 A 股，港股/美股等暂不支持）")
+
         _lm = str(label_mode).lower()
         label_mode = _lm if _lm in ("relative", "cross_section", "weekly_open_close") else "absolute"
         algorithm = "lightgbm" if str(algorithm).lower() in ("lightgbm", "lgbm", "gbdt") else "logistic"
-        lookback_days = int(max(120, min(lookback_days, 3500)))
+        # lookback<=0 表示全量历史（不指定回溯=全量）；>0 则限制 [120, 6000] 天，
+        # 上限放宽到约 16 年以覆盖 ohlcv 长历史（2015→今）。
+        lookback_days = int(lookback_days)
+        if lookback_days > 0:
+            lookback_days = max(120, min(lookback_days, 6000))
         horizon = int(max(1, min(horizon, 20)))
         top_pct = float(max(0.05, min(top_pct, 0.95)))
         started = datetime.now()
@@ -346,13 +366,15 @@ class ModelTrainingService:
             "cross_section": f"周度交易收益横截面强势前{top_pct*100:.0f}%",
             "weekly_open_close": f"周度交易收益横截面强势前{top_pct*100:.0f}%",
         }.get(label_mode, "绝对涨跌")
+        _range_txt = "全量历史" if lookback_days <= 0 else f"回溯{lookback_days}天"
+        _end_txt = f"截止{train_end}" if train_end else "至最新"
         logger.info(
-            "[train] 开始训练：模型=%s，股票=%d 只，回溯=%d 天，标签=未来%d日(%s)，联网刷新=%s",
-            model_name, len(symbols), lookback_days, horizon, _lm_label, refresh,
+            "[train] 开始训练：模型=%s，股票=%d 只，数据=%s(%s，纯本地 ohlcv)，标签=未来%d日(%s)",
+            model_name, len(symbols), _range_txt, _end_txt, horizon, _lm_label,
         )
 
         X, y, used_symbols, all_dates = self._collect_samples(
-            symbols, lookback_days, refresh=refresh,
+            symbols, lookback_days,
             horizon=horizon, threshold=threshold, label_mode=label_mode,
             train_end=train_end, top_pct=top_pct, exclude_st=exclude_st,
         )

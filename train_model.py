@@ -189,7 +189,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--all", action="store_true", help="全市场 A 股（读 stocks.index.json）")
     parser.add_argument("--index-path", type=str, default=None, help="stocks.index.json 路径（默认自动查找）")
     parser.add_argument("--limit", type=int, default=None, help="仅取前 N 只训练（试跑/控内存）")
-    parser.add_argument("--lookback", type=int, default=3000, help="每只股票回溯天数（默认 3000，约覆盖 2015-2026）")
+    parser.add_argument("--lookback", type=int, default=0, help="每只股票回溯天数；0=全量历史（默认，用全部本地数据）")
     parser.add_argument("--name", type=str, default="trend_lr", help="模型名（默认 trend_lr）")
     parser.add_argument("--epochs", type=int, default=400, help="训练轮数（默认 400）")
     parser.add_argument("--lr", type=float, default=0.3, help="学习率（默认 0.3）")
@@ -209,7 +209,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-end", type=str, default=None, metavar="YYYY-MM-DD",
                         help="训练截止日：只用该日期之前的样本训练（留出近期做样本外回测）")
     parser.add_argument("--no-active", action="store_true", help="训练后不设为激活版本")
-    parser.add_argument("--no-refresh", action="store_true", help="不联网，仅用本地缓存数据训练")
+    parser.add_argument("--no-refresh", action="store_true", help="（兼容保留）训练已默认纯本地 ohlcv、不联网")
     parser.add_argument("--notes", type=str, default=None, help="模型备注")
     parser.add_argument("--schedule", type=str, default=None, metavar="HH:MM", help="每日定时训练时间，后台常驻")
     parser.add_argument("--no-run-immediately", action="store_true", help="定时模式下启动时不先训练一次")

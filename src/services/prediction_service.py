@@ -905,18 +905,25 @@ def _load_cached_df(stock_code: str, lookback_days: int) -> pd.DataFrame:
 
 
 def preload_training_cache(
-    symbols: List[str], lookback_days: int,
+    symbols: List[str],
+    lookback_days: Optional[int],
+    *,
+    end_date: Optional[Any] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """批量预加载多只股票日线，供离线训练（refresh=False）一次性读取。
+    """批量预加载多只股票日线，供离线训练一次性读取（纯本地，不联网）。
 
     经「训练/预测行情数据网关」一次批量取数（默认 stock_daily_ohlcv，不回退），
     只打开一次 SQLite 连接做全量扫描再按 code 分组，避免逐票往返成为训练瓶颈。
     以裸码 upper 为 key，与 model_training_service 的 df_cache[code.upper()] 对齐命中。
+
+    数据窗口 [start, end]：
+      - end_date：截止时间，指定则加载至该日为止（留出近期做样本外），否则到最新。
+      - lookback_days<=0/None：全量历史（不指定回溯=全量）；>0 则按回溯天数倒推起点。
     """
     from src.repositories.stock_repo import compute_training_date_range
     from src.repositories.training_bars import load_training_bars_bulk
 
-    start, end = compute_training_date_range(lookback_days)
+    start, end = compute_training_date_range(lookback_days, end_date=end_date)
     return load_training_bars_bulk(symbols, start, end)
 
 

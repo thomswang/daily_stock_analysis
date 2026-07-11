@@ -25,13 +25,25 @@ logger = logging.getLogger(__name__)
 # 训练批量预读：每批 IN 子句包含的股票数（SQLite 绑定参数上限 ~999）
 DEFAULT_TRAIN_BULK_BATCH = int(os.getenv("TRAIN_BULK_BATCH", "500"))
 
+# 全量历史起点：lookback_days<=0 时从此日期加载该票全部本地历史（不指定回溯=全量）
+FULL_HISTORY_START = date(2000, 1, 1)
+
+
 # 与 prediction_service._load_cached_df 一致：多取日历日以保证 rolling 后样本够
 def compute_training_date_range(
-    lookback_days: int,
+    lookback_days: Optional[int],
     *,
     end_date: Optional[date] = None,
 ) -> Tuple[date, date]:
+    """推算训练/预测取数的 [start, end] 日期窗口。
+
+    - end：截止时间，end_date 指定则用之（留出近期做样本外），否则到今天（最新）。
+    - start：lookback_days>0 时按回溯天数从 end 倒推；lookback_days<=0/None 表示
+      「全量历史」，start 取 FULL_HISTORY_START，加载该票全部本地历史。
+    """
     end_d = end_date or date.today()
+    if lookback_days is None or lookback_days <= 0:
+        return FULL_HISTORY_START, end_d
     start_d = end_d - timedelta(days=int((lookback_days + 90) * 1.6) + 30)
     return start_d, end_d
 
