@@ -61,6 +61,7 @@ class StockRankingService:
         self,
         *,
         model_name: str = DEFAULT_RANK_MODEL,
+        model_id: Optional[int] = None,
         lookback_days: int = 250,
         universe: Optional[List[str]] = None,
         limit: Optional[int] = None,
@@ -75,7 +76,7 @@ class StockRankingService:
 
         Returns: 概览 {run_id, as_of_date, scored, written, industries, model_*}
         """
-        model, record = load_ranking_model(model_name)
+        model, record = load_ranking_model(model_name, model_id=model_id)
 
         codes = universe or self._load_universe()
         if limit:

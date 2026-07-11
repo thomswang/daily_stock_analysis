@@ -55,6 +55,7 @@ def _run(args: argparse.Namespace) -> dict:
 
     summary = StockRankingService().compute_snapshot(
         model_name=args.name,
+        model_id=args.model_id,
         lookback_days=args.lookback,
         limit=args.limit,
     )
@@ -72,6 +73,8 @@ def _run(args: argparse.Namespace) -> dict:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="选股强弱榜预计算入口")
     p.add_argument("--name", type=str, default="trend_xsec", help="横截面模型名（默认 trend_xsec）")
+    p.add_argument("--model-id", type=int, default=None, dest="model_id",
+                   help="精确指定模型版本 id 来打分（覆盖 --name 的激活版；用 train_model.py --list 查 id）")
     p.add_argument("--lookback", type=int, default=250, help="每只票特征回溯天数（默认 250）")
     p.add_argument("--limit", type=int, default=None, help="仅打分前 N 只（试跑/控内存）")
     p.add_argument("--schedule", type=str, default=None, metavar="HH:MM", help="每日定时预计算时间，后台常驻")

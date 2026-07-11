@@ -1240,8 +1240,34 @@ def predict_stock(
 DEFAULT_RANK_MODEL = "trend_xsec"
 
 
-def load_ranking_model(model_name: str = DEFAULT_RANK_MODEL):
-    """加载已激活的横截面打分模型，返回 (model, record)；无则抛 PredictionError。"""
+def load_ranking_model(model_name: str = DEFAULT_RANK_MODEL, model_id: Optional[int] = None):
+    """加载横截面打分模型，返回 (model, record)。
+
+    - 传 model_id：精确加载该 id 的版本（无论是否激活），便于对历史模型落快照做对比。
+    - 不传 model_id：加载指定名称下被激活的版本（向后兼容旧用法）。
+    无匹配模型则抛 PredictionError。
+    """
+    record: Optional[Dict[str, Any]] = None
+    if model_id is not None:
+        try:
+            from src.repositories.prediction_model_repo import PredictionModelRepository
+
+            record = PredictionModelRepository().get_by_id(model_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("按 id=%s 加载模型失败: %s", model_id, exc)
+            record = None
+        if record is None:
+            raise PredictionError(
+                f"未找到 id={model_id} 的横截面模型；请用 `python train_model.py --list` 查看可用版本 id"
+            )
+        # 特征口径必须与当前一致，否则不可用
+        if list(record.get("feature_names") or []) != FEATURE_ORDER:
+            raise PredictionError(
+                f"模型 id={model_id} 的特征集与当前不一致，无法用于打分"
+            )
+        model = model_from_params(record["params"])
+        return model, record
+
     loaded = _load_active_model(model_name)
     if loaded is None:
         raise PredictionError(
