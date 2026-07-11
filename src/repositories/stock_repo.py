@@ -16,6 +16,7 @@ from typing import Optional, List, Dict, Any, Iterable, Tuple
 
 import pandas as pd
 from sqlalchemy import and_, bindparam, desc, func, select, text
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.storage import DatabaseManager, StockDailyQuote, StockDailyOhlcv
 
@@ -434,6 +435,35 @@ class StockRepository:
         result: Dict[str, pd.DataFrame] = {}
         try:
             with self.db.get_session() as session:
+                # 预编译两条等价 SQL：带 INDEXED BY（快路径）/ 不带（兜底路径）。
+                # 后者仅在前者的复合索引被迁移/重建误删时触发，避免硬绑定导致
+                # "no such index" 让所有取数功能整体崩溃（仅降级变慢，功能不挂）。
+                sql_indexed = text(
+                    """
+                    SELECT code, date, open, high, low, close, volume, amount,
+                           turnoverratio
+                    FROM stock_daily_ohlcv INDEXED BY ix_ohlcv_code_date_adj
+                    WHERE code IN :codes
+                      AND ktype = :ktype
+                      AND adj_type = :adj_type
+                      AND date >= :start
+                      AND date <= :end
+                    ORDER BY code, date
+                    """
+                ).bindparams(bindparam("codes", expanding=True))
+                sql_plain = text(
+                    """
+                    SELECT code, date, open, high, low, close, volume, amount,
+                           turnoverratio
+                    FROM stock_daily_ohlcv
+                    WHERE code IN :codes
+                      AND ktype = :ktype
+                      AND adj_type = :adj_type
+                      AND date >= :start
+                      AND date <= :end
+                    ORDER BY code, date
+                    """
+                ).bindparams(bindparam("codes", expanding=True))
                 for i in range(0, len(query_codes), batch_size):
                     batch = query_codes[i : i + batch_size]
                     # 强制走 (code,date,adj_type) 复合索引：stock_daily_ohlcv 有 870 万+ 行，
@@ -442,33 +472,21 @@ class StockRepository:
                     # 后，同样查询从数十秒降到 0.03s。
                     # 注：SQLAlchemy 的 with_hint 对 SQLite 不可靠（生成的 [INDEXED BY] 在
                     # 运行时被忽略），故这里用 text() 直出带 INDEXED BY 的 SQL。
-                    sql = text(
-                        """
-                        SELECT code, date, open, high, low, close, volume, amount,
-                               turnoverratio
-                        FROM stock_daily_ohlcv INDEXED BY ix_ohlcv_code_date_adj
-                        WHERE code IN :codes
-                          AND ktype = :ktype
-                          AND adj_type = :adj_type
-                          AND date >= :start
-                          AND date <= :end
-                        ORDER BY code, date
-                        """
-                    ).bindparams(bindparam("codes", expanding=True))
-                    rows = (
-                        session.execute(
-                            sql,
-                            {
-                                "codes": tuple(batch),
-                                "ktype": ktype,
-                                "adj_type": adj_type,
-                                "start": start_date,
-                                "end": end_date,
-                            },
+                    params = {
+                        "codes": tuple(batch),
+                        "ktype": ktype,
+                        "adj_type": adj_type,
+                        "start": start_date,
+                        "end": end_date,
+                    }
+                    try:
+                        rows = session.execute(sql_indexed, params).mappings().all()
+                    except SQLAlchemyError as exc:
+                        logger.warning(
+                            "复合索引 ix_ohlcv_code_date_adj 不可用(%s)，回退到无 hint 查询",
+                            exc,
                         )
-                        .mappings()
-                        .all()
-                    )
+                        rows = session.execute(sql_plain, params).mappings().all()
                     if not rows:
                         continue
                     records: List[Dict[str, Any]] = [
