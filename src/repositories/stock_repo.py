@@ -556,11 +556,15 @@ class StockRepository:
         if not norm_codes:
             return {}
 
+        # stock_daily_ohlcv.code 存的是「裸码」(如 000001)，而票池/全市场清单常传
+        # 带交易所后缀的全码(如 000001.SZ)。为两种形态都能命中，无论传入形态如何，
+        # 都同时按「原样 + 裸码 + 裸码补 .SH/.SZ/.BJ 后缀」查询。
         _SUFFIXES = (".SH", ".SZ", ".BJ")
         query_codes: List[str] = []
         _seen: set = set()
         for nc in norm_codes:
-            cands = [nc] if "." in nc else [nc, *(nc + s for s in _SUFFIXES)]
+            bare = nc.split(".")[0]
+            cands = [nc, bare, *(bare + s for s in _SUFFIXES)]
             for c in cands:
                 if c not in _seen:
                     _seen.add(c)
