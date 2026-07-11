@@ -464,7 +464,7 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     # ── 量价 ──
     feats["volume_ratio"] = (volume / vol_ma5) - 1.0
     feats["volume_trend"] = (vol_ma5 / vol_ma20) - 1.0
-    feats["pv_corr_10"] = ret.rolling(10, min_periods=10).corr(volume.pct_change())
+    feats["pv_corr_10"] = ret.rolling(10, min_periods=10).corr(volume.pct_change(fill_method=None))
     # ── 换手率 ──
     turn_ma20 = turnover.rolling(20, min_periods=5).mean()
     feats["turnover_norm"] = turnover / 100.0                              # 绝对换手率(小数)
@@ -969,7 +969,9 @@ def _load_daily_df(
         and len(cached) >= min_rows
         and (not refresh or _is_cache_fresh(cached))
     ):
-        logger.info("预测使用本地缓存数据: %s（%d 条，命中缓存免联网）", stock_code, len(cached))
+        # 缓存命中是高频正常路径，降为 DEBUG，避免批量打分时刷屏淹没关键日志；
+        # 排查时打开 DEBUG 级别仍可逐票查看。
+        logger.debug("预测使用本地缓存数据: %s（%d 条，命中缓存免联网）", stock_code, len(cached))
         name = _safe_stock_name(stock_code) if resolve_name else None
         return cached, name
 
@@ -995,6 +997,9 @@ def _load_daily_df(
         except Exception as exc:  # noqa: BLE001
             logger.debug("回写 %s 缓存失败（忽略）: %s", stock_code, exc)
 
+    # 联网获取（命中缓存之外的低频路径）：保留 INFO，便于在批量日志中
+    # 一眼看出哪些票真正走了网络——这才是排查的关键信号。
+    logger.info("预测联网获取 %s 行情（%d 条，已回写缓存）", stock_code, len(df))
     return df, (_safe_stock_name(stock_code) if resolve_name else None)
 
 
