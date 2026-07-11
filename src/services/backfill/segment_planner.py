@@ -61,7 +61,14 @@ def plan_segments(
     force: bool,
     min_attempted: Optional[date] = None,
 ) -> List[_Seg]:
-    """根据模式与 DB 覆盖，规划需要请求的区间段。"""
+    """根据模式与 DB 覆盖，规划需要请求的区间段。
+
+    跳过只应发生在"无新数据可拉"（last >= end_d）；任何 last < end_d 的票
+    都会被安排去拉缺口，不再用 fresh_days 容忍"小缺口"——那会把还差几天
+    的新数据也跳过，导致 bump --end 后缺失中间交易日 / daily incremental
+    静默停更。
+    fresh_days 参数保留仅为向后兼容（各调用方仍传入），已不再参与跳过判断。
+    """
     if mode == "range" or force:
         return [(start_d, end_d)] if start_d <= end_d else []
 
@@ -80,11 +87,24 @@ def plan_segments(
         return segs
 
     if mode == "incremental":
-        if (end_d - last).days <= fresh_days:
+        # 只要 [last+1, end_d] 还有缺口就拉；已完整覆盖（end_d 已在库内）才跳过
+        if last >= end_d:
             return []
         seg_start = last + timedelta(days=1)
         return [(seg_start, end_d)] if seg_start <= end_d else []
 
-    if (end_d - last).days <= fresh_days and start_d >= first:
+    # full（默认）：确保 [start_d, end_d] 完整覆盖。
+    # 跳过条件 = 后端已到 end_d（last >= end_d）且本地已存有数据（first is not None）。
+    #
+    # 为什么不再要求 start_d >= first：
+    #   first 是「本数据源在当前模式下能返回的最早日」——百度尾窗（--no-full）只回
+    #   最近约 2000 行（老票≈2018 起），全量源则回真实最早日。当 last 已到 end_d 时，
+    #   [start_d, first-1] 这段更早的历史在当前模式下物理不可达，重复请求只会白白
+    #   保存 0 条并浪费一次请求 + 限流（如 000001：last=end 但 first=2018-04-10，
+    #   旧逻辑因 2010 < 2018 每轮必拉）。
+    #   需要补齐深历史请显式用 --full（全量 all=1）或 --force。
+    # 首跑时 first is None（见上方 first/last 分支），仍会正常探测一次，不会漏数据。
+    # 注意：不再用 fresh_days 容忍"小缺口"——那会把还差几天的新数据也跳过。
+    if last >= end_d and first is not None:
         return []
     return [(start_d, end_d)] if start_d <= end_d else []

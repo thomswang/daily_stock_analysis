@@ -18,6 +18,10 @@ python backfill.py baidu --all --no-full --end 2026-07-07 \
 - `--browser`：用 Playwright 拉本地 Chrome 签 token + 以浏览器通道发请求，防拦截
 - 周末也能跑，覆盖已有数据不影响正确性（upsert 幂等）
 - 支持断点续传，中断后重跑同一命令即可
+- **重跑自动跳过已到 `--end` 的票**：某票 `last` 已等于 `--end`（且本地已有数据）时，
+  重复跑不会再发百度请求（旧版会对 000001 这类老票每轮空拉一次、白费流量+限流）。
+  只有 `last < --end`（有增量缺口）的票才会被拉取。要补 2018 年前的深历史，
+  须显式改用全量模式或 `--force`（尾窗口 `--no-full` 物理上取不到更早数据）。
 
 ---
 
@@ -72,7 +76,7 @@ python backfill.py westock-ohlcv --all --mode incremental \
 
 | 状态 | 含义 | `--retry-failed` 时是否重拉 |
 |------|------|:---:|
-| `done` | 已成功落库 | 否 |
+| `done` | 已成功落库（`last` 已到 `--end` 者重跑直接跳过，不再请求百度） | 否 |
 | `skipped` | 本地已覆盖，无需拉 | 否 |
 | `empty` | 数据源无数据（未上市/退市） | 否 |
 | `failed` | 拉取失败（网络/403） | 是 |

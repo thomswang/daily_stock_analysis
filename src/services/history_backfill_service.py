@@ -457,7 +457,8 @@ class HistoryBackfillService:
     ) -> List["_Seg"]:
         """根据模式与 DB 已有覆盖，规划需要请求的区间段。
 
-        - full：整段 [start, end]（force 或数据太旧时；否则若已最新则空）。
+        - full：整段 [start, end]（force，或 last<end_d 有缺口时；仅当已覆盖到
+          end_d 即 last>=end_d 且起点已覆盖才跳过，不再用 fresh_days 容忍小缺口）。
         - incremental：只补 [last+1, end] 的往后缺口。
         - smart：按 DB 覆盖计算前后缺口——start<first 补前段、end>last 补后段，
                  从而支持“先拉近段、后补更早历史”而不重复请求。
@@ -487,14 +488,19 @@ class HistoryBackfillService:
             return segs
 
         if mode == "incremental":
-            # 已最新则不动
-            if (end_d - last).days <= fresh_days:
+            # 只要 [last+1, end_d] 还有缺口就拉；已完整覆盖（end_d 已在库内）才跳过
+            if last >= end_d:
                 return []
             seg_start = last + timedelta(days=1)
             return [(seg_start, end_d)] if seg_start <= end_d else []
 
-        # full：数据够新则跳过，否则整段
-        if (end_d - last).days <= fresh_days and start_d >= first:
+        # full：确保 [start_d, end_d] 完整覆盖。
+        # 跳过条件 = 后端已到 end_d（last >= end_d）且本地已存有数据（first is not None）。
+        # first 是「本数据源在当前模式下能返回的最早日」，last 已到 end_d 时
+        # [start_d, first-1] 的更早历史在当前模式下不可达，重复请求纯属浪费；
+        # 需补深历史请显式用 --force（或全量模式）。首跑 first is None 仍会探测一次。
+        # 注意：不再用 fresh_days 容忍"小缺口"——那会把还差几天的新数据也跳过。
+        if last >= end_d and first is not None:
             return []
         return [(start_d, end_d)] if start_d <= end_d else []
 
