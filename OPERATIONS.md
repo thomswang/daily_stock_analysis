@@ -218,6 +218,39 @@ python train_model.py --activate 14
 python train_model.py --all --no-refresh --name trend_xsec --lookback 3000 --no-active
 ```
 
+### 试跑 / 测试命令（不污染生产模型）
+
+> 以下命令都带 `--no-active`，训练完**不会覆盖**线上激活模型，只用来验证流程/效果。
+> 试跑建议用独立的 `--name`（如 `trend_xsec_smoke` / `trend_xsec_oos`），便于事后 `--list` 区分、清理。
+
+```bash
+# ① 极速冒烟测试：全市场取前 60 只、回溯 400 天、绝对涨跌标签，验证流程能跑通
+python train_model.py --all --limit 60 --no-active --lookback 400 \
+  --label-mode absolute --notes "A股本地验证-勿激活"
+
+# ② 稍大一点的试跑：前 100 只、回溯 800 天、横截面标签（与生产口径一致）
+python train_model.py --all --limit 100 --no-active --lookback 800 \
+  --name trend_xsec_smoke --notes "试跑-勿激活"
+
+# ③ 样本外验证（walk-forward）：训练截止上周五，把"这周"留作考卷
+#    train-end 之后模型一律没看过，本周结束即可对照预测与实际横截面排名
+python train_model.py --all --no-refresh --name trend_xsec_oos --lookback 3000 \
+  --train-end 2026-07-03 --no-active --notes "样本外验证-截止上周五"
+```
+
+**常用测试命令对照：**
+
+| 命令 | 用途 | 关键参数 |
+|------|------|---------|
+| ① | 快速验证流程通不通 | `--limit 60` 只取前 60 只；`--label-mode absolute` 绝对涨跌标签；`--lookback 400`≈1.6 年 |
+| ② | 接近生产口径的小样本试训 | `--limit 100` + 横截面标签（与 `trend_xsec` 同口径） |
+| ③ | 留出最近一周做"考题" | `--train-end <上周五>` 截止日；`--no-active` 不覆盖生产模型 |
+
+> ⚠️ **`--limit` 必须配合 `--all` 才有意义**：它只是"在已载入的全市场名单上剪一刀"（取前 N 只），
+> 单独写 `--limit` 会报错退出。配 `--from-watchlist` / `--symbols` 时 `--limit` 会被忽略（仅 `--all` 生效）。
+> 另外即使是 60/100 只试跑，里面没有本地数据或 ST 的票会被自动跳过，实际参与训练的会少于设定值。
+> 样本外验证（③）判对错要看「本周横截面排名」而非「周五收盘是否高于周一开盘」，详见文档顶部标签口径说明。
+
 ---
 
 ## 步骤 ③：生成强弱榜快照
