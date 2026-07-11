@@ -15,15 +15,27 @@
 （``window.paris_2108`` → ``getAcsInstance().getSign()``）本地生成，**服务端严格校验签名**，
 纯本地伪造必然 403（已实测）。
 
-token 获取有两种方式（按优先级）：
+.. note::
+   百度现行风控下，``BaiduFetcher``（本类，纯 ``requests`` 直连）默认接入的
+   ``BaiduTokenProvider`` **已失效**：
 
-1. **自动获取（推荐）**：注入 ``BaiduTokenProvider``，由 Playwright 无头加载个股页、驱动页面
-   SDK 拿到真 token。token 按 TTL 缓存（默认 10 分钟），过期或遇到 403 自动刷新，浏览器实例常驻
-   复用——回填全程只需启动一次浏览器。依赖：``pip install playwright && python -m playwright install chromium``。
-2. **手动注入（兜底）**：设置环境变量 ``BAIDU_ACS_TOKEN``，或从浏览器个股 K 线页 Network →
-   ``getquotation`` 请求头复制 token 后通过构造参数 ``acs_token=`` 传入。
+   - 它用 Playwright **无头**加载页面签 token，而无头/自动化会话签出的 token 会被服务端
+     直接拒（403），详见 ``baidu_browser.py`` 模块说明；
+   - 本类实际请求走 Python ``requests``（非浏览器网络栈），也会被 302 到 HTML 拦截页。
 
-``BaiduBackfillService`` 已默认接入方式 1，开箱即用、无需手动粘贴 token。
+   **因此拉取百度数据必须走 ``--browser``（``BaiduBrowserFetcher``）**：以有头真实 Chrome
+   在页面内签 token，并用 ``page.request.get`` 发原始请求，才能稳定返回 JSON。
+   手动注入 token 只适合临时调试，不可用于全量回填。
+
+token 获取途径（按实用性排序）：
+
+1. **浏览器驱动（实际可用，``backfill.py baidu --browser``）**：``BaiduBrowserFetcher``
+   以有头真实 Chrome 在个股页内签出新鲜 token，并用 ``page.request.get`` 发请求。
+   百度仅接受此方式，回填务必加 ``--browser``。
+2. **手动注入（兜底/调试）**：设置环境变量 ``BAIDU_ACS_TOKEN``，或从浏览器个股 K 线页
+   Network → ``getquotation`` 请求头复制 token 后通过构造参数 ``acs_token=`` 传入。
+3. **自动获取（已失效，勿用）**：``BaiduTokenProvider`` 无头签 token + 本类 ``requests``
+   直连，现行风控下必 403，仅保留作历史兼容。
 
 marketData 字段顺序与百度 getquotation keys 完全一致（见 _BAIDU_FIELD_INDEX）。
 

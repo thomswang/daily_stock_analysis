@@ -26,6 +26,37 @@
 
 ---
 
+## 常用命令速查（直接复制）
+
+> 全部命令在 `e:/analysis/daily_stock_analysis` 目录下执行。
+> **训练与快照均为纯本地、零网络**：数据来自 backfill 回填到本地的 `stock_daily_ohlcv` 表，
+> 训练/打分不会发起任何网络请求（断网也能跑）。只有步骤①拉数据才需要联网。
+
+```bash
+# ① 拉取数据（联网，仅此步需要网络）
+python backfill.py baidu --all --no-full --end <今天> --browser \
+  --progress data/baidu_progress_tail.json --retry 3 --sleep 1.5 --ktype 1
+python backfill.py baidu --symbols "000300" --no-full --end <今天> --browser \
+  --progress data/baidu_index_tail.json --retry 3 --sleep 1.5 --ktype 1
+
+# ② 训练模型（纯本地，不联网）—— 带 --no-refresh 显式声明离线
+python train_model.py --all --no-refresh --name trend_xsec --lookback 3000
+
+# ③ 生成强弱榜快照（纯本地，不联网）
+python rank_snapshot.py                  # 用当前激活的模型
+python rank_snapshot.py --name trend_xsec   # 指定模型名
+python rank_snapshot.py --model-id 14    # 指定具体版本 id 打分
+
+# ④ 启动 Web UI
+python main.py --webui
+
+# 模型管理
+python train_model.py --list             # 列出所有版本
+python train_model.py --activate 14      # 回滚到指定 id
+```
+
+---
+
 ## 步骤 ①：更新数据（有新数据时执行）
 
 ### 1A. 更新个股日线（stock_daily_ohlcv 表）
@@ -59,6 +90,24 @@ python backfill.py baidu --all --no-full --end 2026-07-11 --limit 50 --browser
 
 > 详见 `执行ohlcv.md`。所有个股日线统一落 `stock_daily_ohlcv`（旧 `backfill.py kline` 已下线）。
 
+**断点续传 & 重试失败项（关键）**：重跑同一命令 = 自动跳过已完成项，只处理未完成 + 失败项；百度 403 熔断（连续 3 只 403 会中止）后，等几十分钟再跑即可。
+
+```bash
+# 重跑 = 跳过 done+empty，只处理未完成 + failed
+python backfill.py baidu --all --no-full --end <今天> --browser \
+  --progress data/baidu_progress_tail.json --retry 3 --sleep 1.5 --ktype 1 --retry-failed
+
+# 看进度台账：done / skipped / empty / failed / unknown 各自数量
+python backfill.py baidu --progress-status --progress data/baidu_progress_tail.json
+```
+
+**进度台账状态**：`done`=已落库（重跑跳过）｜`skipped`=本地已覆盖｜`empty`=无数据（不重拉）｜`failed`/`unknown`=`--retry-failed` 时重拉。
+
+**校验落库结果**（拉完确认数据进表）：
+```bash
+python -c "import sqlite3; c=sqlite3.connect('data/stock_analysis.db'); r=c.execute(\"select count(*),min(date),max(date) from stock_daily_ohlcv where code='000001'\").fetchone(); print('rows',r[0],'|',r[1],'~',r[2])"
+```
+
 ### 1B. 更新大盘指数（沪深300，也落 stock_daily_ohlcv）
 
 指数数据用于训练时的「大盘环境特征」。沪深300 与个股同表（落库码恒为裸码 `000300`）。
@@ -75,6 +124,11 @@ python backfill.py baidu --symbols "000300" --no-full --end 2026-07-11 \
 ---
 
 ## 步骤 ②：训练模型
+
+> **零网络保证**：`train_model.py` 的训练取数统一走本地 `stock_daily_ohlcv` 表
+> （`preload_training_cache`，纯本地、绝不联网），本地无数据的票直接跳过，不会回退联网。
+> 因此**生成模型一定不联网**——即使断网，加不加 `--no-refresh` 都不影响离线训练。
+> `--no-refresh` 现仅为显式声明/历史兼容，建议始终带上以明确意图。
 
 ### 标准训练命令（推荐）
 
@@ -194,6 +248,18 @@ python rank_snapshot.py
 | `--name` | `trend_xsec` | 使用的模型名 |
 | `--lookback` | `250` | 特征回溯天数（需要足够算指标） |
 | `--limit N` | — | 只打分前 N 只（试跑用） |
+
+### 指定模型 / 版本打分
+
+快照默认用「当前激活」模型。可按模型名或具体版本 id 打到指定模型：
+
+```bash
+python rank_snapshot.py --name trend_xsec     # 按模型名（与训练 --name 对应）
+python rank_snapshot.py --model-id 14         # 按具体版本 id（精确到某一版）
+python rank_snapshot.py --limit 50            # 试跑：只打分前 50 只
+```
+
+> `--model-id` 优先于 `--name`：指定 id 后会精确使用该版本，适合回滚后用旧模型重算快照。
 
 ### 什么时候需要重新跑？
 

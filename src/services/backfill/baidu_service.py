@@ -21,7 +21,12 @@ DEFAULT_PROGRESS_PATH = os.path.join("data", "baidu_backfill_progress.json")
 
 
 def _default_token_provider():
-    """延迟导入并创建默认的百度 acs-token 自动获取器（浏览器懒启动）。"""
+    """延迟导入并创建默认的百度 acs-token 自动获取器（浏览器懒启动）。
+
+    注意：该无头签 token 路径在百度现行风控下已失效（token 被拒 + requests 直连被拦截），
+    仅保留作历史兼容。实际可用路径为 ``--browser``（``BaiduBrowserFetcher``），
+    见 ``backfill_cli.py`` 的 ``baidu`` 子命令与 ``data_provider/baidu_browser.py``。
+    """
     from data_provider.baidu_token_provider import BaiduTokenProvider
 
     return BaiduTokenProvider()
@@ -46,7 +51,9 @@ class BaiduBackfillService:
     """百度 K 线整段回填（BaiduFetcher，HTTP 直连 vapi/v1/getquotation）。
 
     默认自动创建 :class:`BaiduTokenProvider`（懒启动浏览器，按需刷新 acs-token），
-    无需手动粘贴 token。也可通过 ``token_provider`` 传入自定义实例。
+    但该无头路径在百度现行风控下已失效。实际可用请通过 ``fetcher=BaiduBrowserFetcher``
+    注入（对应 ``backfill.py baidu --browser``），以有头真实 Chrome 签 token 并
+    用浏览器网络栈发请求。``token_provider`` 仍可作为自定义实例注入点保留。
     """
 
     dataset = "baidu"
