@@ -79,7 +79,7 @@ class PredictionBacktestService:
         algorithm = "lightgbm" if str(algorithm).lower() in ("lightgbm", "lgbm", "gbdt") else "logistic"
 
         # use_global_model=True：直接用当前“激活的全局模型”逐日打分（不重训），
-        # 让回测检验的正是线上 predict_stock 真正使用的模型；否则退回“单票滚动重训”。
+        # 让回测检验的正是线上激活模型真正使用的模型；否则退回“单票滚动重训”。
         global_model = None
         if use_global_model:
             loaded = _load_active_model(model_name)

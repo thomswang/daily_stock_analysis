@@ -776,59 +776,6 @@ class PredictionModel(Base):
         )
 
 
-class PredictionRecord(Base):
-    """单次走势预测的落库记录 + 到期后回填的真实结果（数据闭环）。
-
-    - 预测发生时写入：方向、概率、置信度、期望收益、基准价、模型来源等
-    - 到期后由评估任务回填：实际收盘、实际收益、实际方向、是否命中
-    用于「历史预测 / 准确率」看板，量化模型表现，是模型再训练的样本来源。
-
-    准确率口径：以预测方向（direction）对比 as_of_date → as_of_date+horizon 交易日
-    的实际收益方向（涨=up/跌=down），一致记命中。
-    """
-
-    __tablename__ = 'prediction_records'
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-
-    code = Column(String(16), nullable=False, index=True)
-    stock_name = Column(String(64))
-    as_of_date = Column(Date, nullable=False, index=True)  # 预测所基于的最新数据日期
-    horizon_days = Column(Integer, nullable=False, default=5)
-
-    # 预测输出
-    direction = Column(String(8), nullable=False)  # up/down
-    up_probability = Column(Float)
-    confidence = Column(Float)
-    expected_return_pct = Column(Float)
-    last_close = Column(Float)  # 基准价（as_of_date 收盘）
-
-    # 模型来源
-    model_source = Column(String(16))  # trained/on_the_fly
-    model_name = Column(String(64))
-    model_version = Column(String(32))
-
-    # 评估回填
-    eval_status = Column(String(16), nullable=False, default='pending', index=True)  # pending/evaluated/insufficient
-    actual_close = Column(Float)
-    actual_return_pct = Column(Float)
-    actual_direction = Column(String(8))  # up/down
-    is_correct = Column(Boolean)
-    evaluated_at = Column(DateTime)
-
-    created_at = Column(DateTime, default=datetime.now, index=True)
-
-    __table_args__ = (
-        Index('ix_prediction_record_code_date', 'code', 'as_of_date'),
-        Index('ix_prediction_record_status_created', 'eval_status', 'created_at'),
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"<PredictionRecord(code={self.code}, as_of={self.as_of_date}, "
-            f"dir={self.direction}, status={self.eval_status}, correct={self.is_correct})>"
-        )
-
 
 class PortfolioAccount(Base):
     """Portfolio account metadata."""
