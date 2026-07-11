@@ -1009,6 +1009,10 @@ def _safe_stock_name(stock_code: str) -> Optional[str]:
 
 
 # 全市场 β 基准指数（沪深300）；个股环境特征统一以它为参照。
+# ⚠️ 注意码形态：此处用全码 "000300.SH"，但落库时 bare 化后仍是裸码 000300
+# （见 baidu_fetcher.INDEX_BAIDU_MAP：百度请求码才是 399300，落库码恒为 000300）。
+# load_market_df → load_training_bar_df 会把 "000300.SH" 回退到裸码 000300 命中本地数据，
+# 因此本常量与 index 落库码天然对齐，请勿改成 399300（那是"对百度发的请求码"，非落库码）。
 DEFAULT_MARKET_INDEX = "000300.SH"
 _MARKET_DF_CACHE: Dict[str, pd.DataFrame] = {}
 
@@ -1027,13 +1031,15 @@ def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
 
         from src.repositories.training_bars import load_training_bar_df
 
+        # index_code 形如 "000300.SH"，load_training_bar_df 内部会回退到裸码 000300
+        # 命中本地落库数据（沪深300 的落库码恒为裸码 000300，非 399300）。
         bars = load_training_bar_df(index_code, _date(2000, 1, 1), _date.today())
         if bars is not None and not bars.empty and "close" in bars.columns:
             df = bars[["date", "close"]].sort_values("date").reset_index(drop=True)
     except Exception as exc:  # noqa: BLE001 - 缺指数不应中断预测/训练
         logger.debug("加载大盘指数 %s 失败（将中性处理）: %s", index_code, exc)
     if df.empty:
-        logger.warning("大盘指数 %s 无本地数据，环境特征将中性填 0", index_code)
+        logger.warning("大盘指数 %s 无本地数据，环境特征将中性填 0（请先回填沪深300）", index_code)
     _MARKET_DF_CACHE[index_code] = df
     return df
 

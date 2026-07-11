@@ -57,6 +57,17 @@ _BAIDU_HTTP_TIMEOUT = 30
 # 旧接口 ktype("1") → vapi ktype("day"/"week"/"month")
 _KTYPE_MAP = {"1": "day", "day": "day", "week": "week", "month": "month", "101": "day"}
 
+# ⚠️ 指数特殊处理（勿误改落库码！）
+# 百度对指数走独立的 ``group=quotation_index_kline``，且沪深300 在百度侧用深证镜像码
+# ``399300``（而非裸码 000300）。因此：
+#   - 抓取请求码（query/code 参数）= 399300（仅此映射作用于网络请求）；
+#   - 落库 code 仍 = 000300（KEY 用裸码，与个股一致），
+#     以便训练/预测侧 load_market_df 用 000300.SH 直接命中本地裸码 000300，下游零改动。
+# 调用方永远传/存 000300，绝不要传 399300（那只是"对百度发的请求码"）。
+INDEX_BAIDU_MAP = {
+    "000300": {"group": "quotation_index_kline", "query": "399300", "name": "沪深300"},
+}
+
 # vapi 必需的请求头（缺 acs-token 直接 403）
 _ACCEPT = "application/vnd.finance-web.v1+json"
 _USER_AGENT = (
@@ -83,23 +94,43 @@ def build_baidu_params(
     """
     api_ktype = _KTYPE_MAP.get(ktype, ktype)
     bare = normalize_stock_code(code)
-    params: Dict[str, str] = {
-        "srcid": "5353",
-        "pointType": "string",
-        "group": "quotation_kline_ab",
-        "query": bare,
-        "code": bare,
-        "market_type": market_type,
-        "newFormat": "1",
-        "is_kc": "0",
-        "ktype": api_ktype,
-        "finClientType": "pc",
-        "chartType": "kline",
-        "stock_type": market_type,
-        "financeType": "stock",
-    }
+    idx = INDEX_BAIDU_MAP.get(bare)
+    if idx:
+        # 指数标的：独立 group=quotation_index_kline + 深证镜像查询码（沪深300：000300→399300），
+        # 参数集不含个股专有的 chartType/stock_type/financeType（贴合实测可用的指数请求）。
+        query = idx["query"]
+        params: Dict[str, str] = {
+            "srcid": "5353",
+            "pointType": "string",
+            "group": idx["group"],
+            "query": query,
+            "code": query,
+            "market_type": market_type,
+            "newFormat": "1",
+            "name": name or idx.get("name", ""),
+            "is_kc": "0",
+            "ktype": api_ktype,
+            "finClientType": "pc",
+        }
+    else:
+        params = {
+            "srcid": "5353",
+            "pointType": "string",
+            "group": "quotation_kline_ab",
+            "query": bare,
+            "code": bare,
+            "market_type": market_type,
+            "newFormat": "1",
+            "is_kc": "0",
+            "ktype": api_ktype,
+            "finClientType": "pc",
+            "chartType": "kline",
+            "stock_type": market_type,
+            "financeType": "stock",
+        }
     if full:
         params["all"] = "1"
+    # 手动传入 name 时覆盖（含指数分支：用户显式命名优先于内置别名）
     if name:
         params["name"] = name
     start_ts = _to_unix_ts(start_time)

@@ -1,7 +1,8 @@
 # OHLCV 数据回填 — 日常操作
 
 **主表**: `stock_daily_ohlcv`（qfq 前复权，百度 + westock 双源）
-**训练消费**: 暂未接入（`TRAIN_BAR_SOURCE` 无 `ohlcv` 选项）
+**训练消费**: ✅ 已接入（`TRAIN_BAR_SOURCE=ohlcv` 默认即此表；沪深300 作为大盘 β 基准，供
+`prediction_service.load_market_df` 派生 `mkt_*` / `rel_strength_*` 环境特征）
 
 ---
 
@@ -58,6 +59,58 @@ python backfill.py baidu --symbols "600519" --mode range \
 ```
 
 > ⚠️ `--symbols` 带前导零的代码必须加引号，否则 shell 会剥掉 `000001` → `1`
+
+---
+
+## 沪深300 指数（特殊码处理 ⚠️）
+
+沪深300 在百度侧是**指数**而非个股，接口/查询码都不同：
+
+| 码 | 用途 | 在哪用 |
+|----|------|--------|
+| `000300` | **落库码 / 本地 key / 训练读取码**（裸码） | 你传给 `--symbols`、落库 `stock_daily_ohlcv.code`、训练 `load_market_df("000300.SH")` 回退到的裸码 |
+| `399300` | **仅对百度发出的请求码**（深证镜像） | `baidu_fetcher.INDEX_BAIDU_MAP` 内部自动映射，**你永远不需要手动传** |
+
+> 关键：**你始终只传 `000300`**。脚本会自动把抓取请求改成 `399300` + `group=quotation_index_kline`，
+> 但落库和训练读取一律用裸码 `000300`。切勿把 `--symbols` 写成 `399300`，否则落库码错位、训练读不到。
+
+### 日常拉取最新（推荐，每日/周末都跑）
+
+> ⚠️ 必须加引号（前导零）；`--no-full` 取最近约 2000 行（≈8 年），覆盖增量绰绰有余；
+> `--end` 写当天或"今天"即可，upsert 幂等、重复跑安全。
+
+```bash
+python backfill.py baidu --symbols "000300" --no-full --end 2026-07-11 \
+  --progress data/baidu_index_tail.json --retry 3 --sleep 1.5 --ktype 1 \
+  --browser
+```
+
+### 全量刷新（首次 / 发现历史缺口时）
+
+从 2010 年起全量重拉（已有数据 upsert 覆盖，不影响正确性）：
+
+```bash
+python backfill.py baidu --symbols "000300" --mode full \
+  --start 2010-01-01 --end 2026-07-11 \
+  --progress data/baidu_index_full.json --retry 3 --sleep 1.5 --ktype 1 \
+  --browser
+```
+
+### 校验落库结果
+
+```bash
+python -c "import sqlite3; c=sqlite3.connect('data/stock_analysis.db'); r=c.execute(\"select count(*),min(date),max(date),round(min(close),2),round(max(close),2) from stock_daily_ohlcv where code='000300'\").fetchone(); print('rows',r[0],'|',r[1],'~',r[2],'| close',r[3],'~',r[4])"
+```
+
+> 预期：rows≈4000+，close 落在沪深300 正常区间（约 2000~6000）；`turnoverratio` 为 `None` 属正常（指数无换手率）。
+
+### 训练侧是否能命中
+
+```bash
+python -c "from src.services.prediction_service import load_market_df; df=load_market_df(); print('market rows', len(df), df[['date','close']].head(1).to_dict('records'), df[['date','close']].tail(1).to_dict('records'))"
+```
+
+> 返回非空 DataFrame 即表示大盘环境特征已生效（不再中性填 0）。
 
 ---
 

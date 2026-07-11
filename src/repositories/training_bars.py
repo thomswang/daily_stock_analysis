@@ -140,7 +140,9 @@ def load_training_bar_df(
     key = (code or "").strip().upper()
     if key in bulk:
         return bulk[key]
-    # bulk 以裸码为 key，带后缀全码未命中时回退按裸码取
+    # bulk 以裸码为 key，带后缀全码未命中时回退按裸码取。
+    # 例：大盘常量 "000300.SH" → 回退裸码 "000300" 命中落库数据
+    # （沪深300 的落库 code 恒为裸码 000300，见 baidu_fetcher.INDEX_BAIDU_MAP）。
     return bulk.get(key.split(".")[0], pd.DataFrame())
 
 
