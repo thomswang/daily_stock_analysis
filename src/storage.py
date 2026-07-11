@@ -1474,6 +1474,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
             self._ensure_ohlcv_columns()
+            self._ensure_legacy_prediction_table_removed()
             self._ensure_rank_snapshot_schema()
             self._ensure_financial_report_table()
             self._ensure_intelligence_item_scope_values()
@@ -1667,6 +1668,24 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         with self._engine.begin() as conn:
             conn.exec_driver_sql("DROP TABLE IF EXISTS stock_daily_ohlcv")
         Base.metadata.create_all(self._engine, tables=[StockDailyOhlcv.__table__])
+
+    def _ensure_legacy_prediction_table_removed(self) -> None:
+        """清理单票走势预测闭环移除后遗留的 prediction_records 表。
+
+        该表原由已删除的 ``PredictionRecord`` ORM 模型（prediction_record_repo /
+        predict_stock 闭环）使用；代码清理已完成且确认无需迁移历史数据，故在初始化时
+        一次性 DROP。动作幂等（IF EXISTS），后续启动为 no-op，不影响其它表。
+        """
+        if not self._is_sqlite_engine:
+            return
+        try:
+            with self._engine.begin() as conn:
+                conn.exec_driver_sql("DROP TABLE IF EXISTS prediction_records")
+            logger.info("[schema] 已清理遗留表 prediction_records（单票预测闭环已移除）")
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[schema] 清理遗留表 prediction_records 失败（可忽略，下次启动重试）"
+            )
 
     def _ensure_rank_snapshot_schema(self) -> None:
         """强弱榜快照重构为 run 维度：旧 stock_rank_snapshot 无 run_id 列，需删表重建。
