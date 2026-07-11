@@ -68,7 +68,12 @@ class DailyIngestService:
         start: date,
         end: date,
     ) -> IngestResult:
-        """腾讯 fqkline 整段 → stock_daily_kline。"""
+        """腾讯 fqkline 整段 → stock_daily_kline。
+
+        ⚠️ 已下线：stock_daily_kline 表与其写入方法(save_daily_kline_data)已移除，
+        本方法保留请求/抓取逻辑但不再有可用的落库路径，调用会失败。
+        统一改用 stock_daily_ohlcv 链路：backfill.py baidu / westock-ohlcv。
+        """
         if not is_cn_a_share(code):
             return IngestResult(0, 0, "", None)
         from src.ingest.tencent_kline import TencentKlineIngestor

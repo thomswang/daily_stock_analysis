@@ -70,7 +70,11 @@ class DailyKlineService:
         data_source: str = "TencentFetcher",
         adj: Optional[str] = None,
     ) -> int:
-        """拉取 kline 整段并 upsert 到 stock_daily_kline。"""
+        """拉取 kline 整段并 upsert 到 stock_daily_kline。
+
+        ⚠️ 已下线：stock_daily_kline 表与 save_daily_kline_data 已移除，抓取(fetch_bars)
+        逻辑保留但无落库路径；请改用 stock_daily_ohlcv 链路（backfill.py baidu / westock-ohlcv）。
+        """
         adj_type = adj or self.adj
         records = self.fetch_bars(code, start=start, end=end, adj=adj_type)
         if not records:

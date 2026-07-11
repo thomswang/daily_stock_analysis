@@ -112,7 +112,8 @@ class PredictionBacktestService:
             ).to_numpy(dtype=float)
             if np.isnan(mkt_close).all():
                 raise PredictionError(
-                    "relative 模式需要大盘指数数据但未加载到；请先跑 backfill_index.py 回填沪深300"
+                    "relative 模式需要大盘指数数据但未加载到；请先跑 "
+                    "`python backfill.py baidu --symbols \"000300\" --no-full --end <今天> --browser` 回填沪深300"
                 )
         else:
             mkt_close = np.full(n, np.nan, dtype=float)

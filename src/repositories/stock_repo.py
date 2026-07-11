@@ -17,7 +17,7 @@ from typing import Optional, List, Dict, Any, Iterable, Tuple
 import pandas as pd
 from sqlalchemy import and_, desc, func, select
 
-from src.storage import DatabaseManager, StockDaily, StockDailyKline, StockDailyQuote, StockDailyOhlcv
+from src.storage import DatabaseManager, StockDailyQuote, StockDailyOhlcv
 
 logger = logging.getLogger(__name__)
 
@@ -60,20 +60,14 @@ def _normalize_codes(codes: Iterable[str]) -> List[str]:
     return out
 
 
-def _legacy_turnover_fallback() -> bool:
-    """是否允许从 stock_daily 的旧 turnover_rate / float_shares / volume_ratio 列兜底读取。
 
-    默认 False——stock_daily_quote 是唯一权威源。仅在需要兼容旧库时打开：
-        export DSA_LEGACY_TURNOVER_FALLBACK=1
-    """
-    return os.getenv("DSA_LEGACY_TURNOVER_FALLBACK", "").lower() in ("1", "true", "yes")
 
 
 class StockRepository:
     """
     股票数据访问层
     
-    封装 StockDaily 表的数据库操作
+    封装 stock_daily_ohlcv / stock_daily_quote 表的数据库操作
     """
     
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
@@ -85,7 +79,7 @@ class StockRepository:
         """
         self.db = db_manager or DatabaseManager.get_instance()
     
-    def get_latest(self, code: str, days: int = 2) -> List[StockDaily]:
+    def get_latest(self, code: str, days: int = 2) -> List[StockDailyOhlcv]:
         """
         获取最近 N 天的数据
         
@@ -94,7 +88,7 @@ class StockRepository:
             days: 获取天数
             
         Returns:
-            StockDaily 对象列表（按日期降序）
+            StockDailyOhlcv 对象列表（按日期降序）
         """
         try:
             return self.db.get_latest_data(code, days)
@@ -107,7 +101,7 @@ class StockRepository:
         code: str,
         start_date: date,
         end_date: date
-    ) -> List[StockDaily]:
+    ) -> List[StockDailyOhlcv]:
         """
         获取指定日期范围的数据
         
@@ -117,7 +111,7 @@ class StockRepository:
             end_date: 结束日期
             
         Returns:
-            StockDaily 对象列表
+            StockDailyOhlcv 对象列表
         """
         try:
             return self.db.get_data_range(code, start_date, end_date)
@@ -186,23 +180,34 @@ class StockRepository:
             logger.error(f"获取分析上下文失败: {e}")
             return None
 
-    def get_start_daily(self, *, code: str, analysis_date: date) -> Optional[StockDaily]:
-        """Return StockDaily for analysis_date (preferred) or nearest previous date."""
+    def get_start_daily(self, *, code: str, analysis_date: date) -> Optional[StockDailyOhlcv]:
+        """返回 analysis_date 当日（优先）或最近的前一交易日的日线（stock_daily_ohlcv）。"""
         with self.db.get_session() as session:
             row = session.execute(
-                select(StockDaily)
-                .where(and_(StockDaily.code == code, StockDaily.date <= analysis_date))
-                .order_by(desc(StockDaily.date))
+                select(StockDailyOhlcv)
+                .where(and_(
+                    StockDailyOhlcv.code == code,
+                    StockDailyOhlcv.ktype == "1",
+                    StockDailyOhlcv.adj_type == "qfq",
+                    StockDailyOhlcv.date <= analysis_date,
+                ))
+                .order_by(desc(StockDailyOhlcv.date), desc(StockDailyOhlcv.id))
                 .limit(1)
             ).scalar_one_or_none()
             return row
 
-    def get_daily_on_date(self, *, code: str, target_date: date) -> Optional[StockDaily]:
-        """Return StockDaily for the exact target_date without trading-day fallback."""
+    def get_daily_on_date(self, *, code: str, target_date: date) -> Optional[StockDailyOhlcv]:
+        """返回精确 target_date 当日的日线（不做交易日回退），读 stock_daily_ohlcv。"""
         with self.db.get_session() as session:
             row = session.execute(
-                select(StockDaily)
-                .where(and_(StockDaily.code == code, StockDaily.date == target_date))
+                select(StockDailyOhlcv)
+                .where(and_(
+                    StockDailyOhlcv.code == code,
+                    StockDailyOhlcv.ktype == "1",
+                    StockDailyOhlcv.adj_type == "qfq",
+                    StockDailyOhlcv.date == target_date,
+                ))
+                .order_by(desc(StockDailyOhlcv.id))
                 .limit(1)
             ).scalar_one_or_none()
             return row
@@ -220,56 +225,11 @@ class StockRepository:
             logger.error(f"获取 quote 截面失败: {e}")
             return []
 
-    def get_range_merged(
-        self,
-        code: str,
-        start_date: date,
-        end_date: date,
-    ) -> List[Dict[str, Any]]:
-        """K 线 + quote 截面 join（按 date 对齐，供训练/特征工程）。
-
-        权威源：换手率 / 流通股本 / 量比 来自 stock_daily_quote；
-        stock_daily 的同名列已 deprecated（详见 storage.py::StockDaily）。
-        如需兼容旧库，设置 ``DSA_LEGACY_TURNOVER_FALLBACK=1`` 打开兜底。
-        """
-        daily_rows = self.get_range(code, start_date, end_date)
-        quote_rows = self.get_quote_range(code, start_date, end_date)
-        quote_by_date = {r.date: r for r in quote_rows}
-        allow_legacy = _legacy_turnover_fallback()
-        merged: List[Dict[str, Any]] = []
-        for row in daily_rows:
-            q = quote_by_date.get(row.date)
-            if q is not None:
-                turnover_rate = q.turnover_rate
-                float_shares = q.float_shares
-                volume_ratio = q.volume_ratio
-            elif allow_legacy:
-                turnover_rate = getattr(row, "turnover_rate", None)
-                float_shares = getattr(row, "float_shares", None)
-                volume_ratio = row.volume_ratio
-            else:
-                turnover_rate = None
-                float_shares = None
-                volume_ratio = None
-            merged.append({
-                "date": row.date,
-                "open": row.open,
-                "high": row.high,
-                "low": row.low,
-                "close": row.close,
-                "volume": row.volume,
-                "amount": row.amount,
-                "pct_chg": row.pct_chg,
-                "turnover_rate": turnover_rate,
-                "float_shares": float_shares,
-                "volume_ratio": volume_ratio,
-            })
-        return merged
-
     def get_coverage(self, code: str) -> Dict[str, Any]:
-        """查询某股票在 stock_daily 里已存的最早/最晚日期与条数。
+        """查询某股票在 stock_daily_ohlcv（日线/前复权）里已存的最早/最晚日期与条数。
 
-        供历史回填的断点续传判定使用（DB 为数据真相源）。
+        供历史回填的断点续传判定使用（DB 为数据真相源）。按 date 去重计数
+        （多源同一交易日只算一天）。
 
         Returns:
             {"first": date|None, "last": date|None, "rows": int}
@@ -278,26 +238,45 @@ class StockRepository:
             with self.db.get_session() as session:
                 first, last, cnt = session.execute(
                     select(
-                        func.min(StockDaily.date),
-                        func.max(StockDaily.date),
-                        func.count(),
-                    ).where(StockDaily.code == code)
+                        func.min(StockDailyOhlcv.date),
+                        func.max(StockDailyOhlcv.date),
+                        func.count(func.distinct(StockDailyOhlcv.date)),
+                    ).where(and_(
+                        StockDailyOhlcv.code == code,
+                        StockDailyOhlcv.ktype == "1",
+                        StockDailyOhlcv.adj_type == "qfq",
+                    ))
                 ).one()
             return {"first": first, "last": last, "rows": int(cnt or 0)}
         except Exception as e:
             logger.error(f"查询 {code} 数据覆盖范围失败: {e}")
             return {"first": None, "last": None, "rows": 0}
 
-    def get_forward_bars(self, *, code: str, analysis_date: date, eval_window_days: int) -> List[StockDaily]:
-        """Return forward daily bars after analysis_date, up to eval_window_days."""
+    def get_forward_bars(self, *, code: str, analysis_date: date, eval_window_days: int) -> List[StockDailyOhlcv]:
+        """返回 analysis_date 之后、最多 eval_window_days 个交易日的前向日线（stock_daily_ohlcv）。
+
+        stock_daily_ohlcv 同一 (code,date) 可能有多源行，先按 date 去重（保留 id 最大者），
+        再取前 eval_window_days 个交易日，避免重复交易日污染前向窗口计数。
+        """
         with self.db.get_session() as session:
             rows = session.execute(
-                select(StockDaily)
-                .where(and_(StockDaily.code == code, StockDaily.date > analysis_date))
-                .order_by(StockDaily.date)
-                .limit(eval_window_days)
+                select(StockDailyOhlcv)
+                .where(and_(
+                    StockDailyOhlcv.code == code,
+                    StockDailyOhlcv.ktype == "1",
+                    StockDailyOhlcv.adj_type == "qfq",
+                    StockDailyOhlcv.date > analysis_date,
+                ))
+                .order_by(StockDailyOhlcv.date, desc(StockDailyOhlcv.id))
             ).scalars().all()
-            return list(rows)
+        # 去重（每交易日保留 id 最大者），按 date 升序取前 N 天
+        best: Dict[date, StockDailyOhlcv] = {}
+        for row in rows:
+            cur = best.get(row.date)
+            if cur is None or (row.id or 0) > (cur.id or 0):
+                best[row.date] = row
+        ordered = [best[d] for d in sorted(best.keys())]
+        return ordered[: int(eval_window_days)]
 
     def load_merged_bulk(
         self,
@@ -376,32 +355,6 @@ class StockRepository:
         )
         return bulk.get((code or "").strip().upper(), pd.DataFrame())
 
-    def get_kline_coverage(
-        self,
-        code: str,
-        *,
-        adj_type: str = "qfq",
-    ) -> Dict[str, Any]:
-        """查询 stock_daily_kline 已存最早/最晚日期与条数。"""
-        try:
-            with self.db.get_session() as session:
-                first, last, cnt = session.execute(
-                    select(
-                        func.min(StockDailyKline.date),
-                        func.max(StockDailyKline.date),
-                        func.count(),
-                    ).where(
-                        and_(
-                            StockDailyKline.code == code,
-                            StockDailyKline.adj_type == adj_type,
-                        )
-                    )
-                ).one()
-            return {"first": first, "last": last, "rows": int(cnt or 0)}
-        except Exception as e:
-            logger.error("查询 %s kline 覆盖失败: %s", code, e)
-            return {"first": None, "last": None, "rows": 0}
-
     def get_ohlcv_coverage(
         self,
         code: str,
@@ -431,99 +384,6 @@ class StockRepository:
         except Exception as e:
             logger.error("查询 %s ohlcv 覆盖失败: %s", code, e)
             return {"first": None, "last": None, "rows": 0}
-
-    def load_kline_bulk(
-        self,
-        codes: List[str],
-        start_date: date,
-        end_date: date,
-        *,
-        batch_size: int = DEFAULT_TRAIN_BULK_BATCH,
-        adj_type: str = "qfq",
-    ) -> Dict[str, pd.DataFrame]:
-        """批量读 stock_daily_kline（前复权 OHLCV，供技术因子训练）。
-
-        注意：amount/turnover_rate 列恒为 NULL（fqkline 不含），读取后为 NaN。
-        build_features 对 turnover 缺失填 0（可选特征），不影响训练。
-        """
-        norm_codes = _normalize_codes(codes)
-        if not norm_codes:
-            return {}
-
-        # 库里 stock_daily_kline.code 存的是带交易所后缀格式(如 600519.SH)，
-        # 而训练/预测传入的 code 多为裸代码(如 600519)。为兼容两种格式，
-        # 查询时同时枚举裸码与其 .SH/.SZ/.BJ 后缀变体。
-        _SUFFIXES = (".SH", ".SZ", ".BJ")
-        query_codes: List[str] = []
-        _seen: set = set()
-        for nc in norm_codes:
-            cands = [nc] if "." in nc else [nc, *(nc + s for s in _SUFFIXES)]
-            for c in cands:
-                if c not in _seen:
-                    _seen.add(c)
-                    query_codes.append(c)
-
-        batch_size = max(1, int(batch_size))
-        result: Dict[str, pd.DataFrame] = {}
-        try:
-            with self.db.get_session() as session:
-                for i in range(0, len(query_codes), batch_size):
-                    batch = query_codes[i : i + batch_size]
-                    stmt = (
-                        select(StockDailyKline)
-                        .where(
-                            StockDailyKline.code.in_(batch),
-                            StockDailyKline.adj_type == adj_type,
-                            StockDailyKline.date >= start_date,
-                            StockDailyKline.date <= end_date,
-                        )
-                        .order_by(StockDailyKline.code, StockDailyKline.date)
-                    )
-                    rows = session.execute(stmt).scalars().all()
-                    if not rows:
-                        continue
-                    records: List[Dict[str, Any]] = []
-                    for row in rows:
-                        records.append({
-                            "code": row.code,
-                            "date": row.date,
-                            "open": row.open,
-                            "high": row.high,
-                            "low": row.low,
-                            "close": row.close,
-                            "volume": row.volume,
-                            "amount": row.amount,
-                            "turnover_rate": row.turnover_rate,
-                        })
-                    chunk = pd.DataFrame(records)
-                    chunk["code"] = chunk["code"].astype(str).str.upper()
-                    for code, group in chunk.groupby("code", sort=False):
-                        g = group.drop(columns=["code"]).sort_values("date").reset_index(drop=True)
-                        # 以裸代码为 key，兼容上层 df_cache[裸code] 命中
-                        bare = str(code).split(".")[0].upper()
-                        result[bare] = g
-        except Exception as exc:
-            logger.error("批量读 kline 失败: %s", exc)
-            raise
-        return result
-
-    def load_kline_df(
-        self,
-        code: str,
-        start_date: date,
-        end_date: date,
-        *,
-        adj_type: str = "qfq",
-    ) -> pd.DataFrame:
-        bulk = self.load_kline_bulk(
-            [code], start_date, end_date, batch_size=1, adj_type=adj_type,
-        )
-        key = (code or "").strip().upper()
-        if key in bulk:
-            return bulk[key]
-        # load_kline_bulk 以裸码(000001)为 key，票池常传带后缀全码(000001.SZ)，
-        # 全码未命中时回退按裸码查，避免误判「本地无数据」而回退联网。
-        return bulk.get(key.split(".")[0], pd.DataFrame())
 
     # 输出列契约：与训练/预测特征层（build_features）对齐。turnoverratio 在此
     # 重命名为 turnover_rate，使换手率特征（turnover_norm/turnover_rel）激活。

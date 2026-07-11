@@ -24,7 +24,7 @@ from src.storage import (
     PortfolioPosition,
     PortfolioPositionLot,
     PortfolioTrade,
-    StockDaily,
+    StockDailyOhlcv,
 )
 
 logger = logging.getLogger(__name__)
@@ -712,16 +712,19 @@ class PortfolioRepository:
         return close[0] if close is not None else None
 
     def get_latest_close_with_date(self, symbol: str, as_of: date) -> Optional[Tuple[float, date]]:
+        # 统一读 stock_daily_ohlcv（日线/前复权）；旧 stock_daily 已下线。
         with self.db.get_session() as session:
             row = session.execute(
-                select(StockDaily)
+                select(StockDailyOhlcv)
                 .where(
                     and_(
-                        StockDaily.code == symbol,
-                        StockDaily.date <= as_of,
+                        StockDailyOhlcv.code == symbol,
+                        StockDailyOhlcv.ktype == "1",
+                        StockDailyOhlcv.adj_type == "qfq",
+                        StockDailyOhlcv.date <= as_of,
                     )
                 )
-                .order_by(desc(StockDaily.date))
+                .order_by(desc(StockDailyOhlcv.date), desc(StockDailyOhlcv.id))
                 .limit(1)
             ).scalar_one_or_none()
             if row is None or row.close is None:

@@ -95,131 +95,6 @@ class DatabaseSchemaMigration(Base):
     applied_at = Column(DateTime, default=datetime.now, nullable=False, index=True)
 
 
-class StockDaily(Base):
-    """
-    股票日线 K 线层（时间序列）
-
-    仅存 kline 类接口拉取的 OHLCV + 派生技术指标。
-    换手率、流通股本等截面字段在 stock_daily_quote（quote --date）表。
-    """
-    __tablename__ = 'stock_daily'
-    
-    # 主键
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    
-    # 股票代码（如 600519, 000001）
-    code = Column(String(10), nullable=False, index=True)
-    
-    # 交易日期
-    date = Column(Date, nullable=False, index=True)
-    
-    # OHLC 数据
-    open = Column(Float)
-    high = Column(Float)
-    low = Column(Float)
-    close = Column(Float)
-    
-    # 成交数据
-    volume = Column(Float)  # 成交量（股）
-    amount = Column(Float)  # 成交额（元）
-    pct_chg = Column(Float)  # 涨跌幅（%）
-
-    # 原始行情字段（数据源直接给出，属"原始层"真相，不再丢弃）
-    change_amount = Column(Float)   # 涨跌额（元）
-    amplitude = Column(Float)       # 振幅（%）
-
-    # ⚠️ DEPRECATED（保留列仅为兼容旧库读数，不再由 kline 写入）：
-    # 换手率 / 流通股本 / 量比 属"截面口径"，各源计算方式不一致（如新浪历史 kline
-    # 用当日流通股本自算 vs quote --date 权威值），统一由 stock_daily_quote 承接。
-    # 详见 westock-data/test/server.js 的 kline vs quote --date 分层说明。
-    turnover_rate = Column(Float)   # DEPRECATED, see stock_daily_quote.turnover_rate
-    float_shares = Column(Float)    # DEPRECATED, see stock_daily_quote.float_shares
-
-    # 技术指标
-    ma5 = Column(Float)
-    ma10 = Column(Float)
-    ma20 = Column(Float)
-    volume_ratio = Column(Float)  # DEPRECATED, see stock_daily_quote.volume_ratio
-    
-    # 数据来源
-    data_source = Column(String(50))  # 记录数据来源（如 AkshareFetcher）
-    
-    # 更新时间
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-    
-    # 唯一约束：同一股票同一日期只能有一条数据
-    __table_args__ = (
-        UniqueConstraint('code', 'date', name='uix_code_date'),
-        Index('ix_code_date', 'code', 'date'),
-    )
-    
-    def __repr__(self):
-        return f"<StockDaily(code={self.code}, date={self.date}, close={self.close})>"
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return {
-            'code': self.code,
-            'date': self.date,
-            'open': self.open,
-            'high': self.high,
-            'low': self.low,
-            'close': self.close,
-            'volume': self.volume,
-            'amount': self.amount,
-            'pct_chg': self.pct_chg,
-            'ma5': self.ma5,
-            'ma10': self.ma10,
-            'ma20': self.ma20,
-            'volume_ratio': self.volume_ratio,
-            'data_source': self.data_source,
-        }
-
-
-class StockDailyKline(Base):
-    """
-    A 股 kline 日线表（前复权 qfq 等；与 stock_daily_quote 不复权截面分离）。
-
-    数据源：TencentFetcher（腾讯 fqkline API），单表 code+date+adj_type。
-
-    字段说明：
-      - open/high/low/close/volume：fqkline 直供，有值
-      - amount：成交额，fqkline 不返回，恒为 NULL（成交额在 stock_daily_quote 表）
-      - turnover_rate：换手率，fqkline 不返回，恒为 NULL（换手率在 stock_daily_quote 表）
-      - data_source：记录数据来源（TencentFetcher）
-    """
-    __tablename__ = "stock_daily_kline"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    code = Column(String(16), nullable=False, index=True)
-    date = Column(Date, nullable=False, index=True)
-    adj_type = Column(String(8), nullable=False, default="qfq", index=True)
-
-    open = Column(Float)
-    high = Column(Float)
-    low = Column(Float)
-    close = Column(Float)
-    volume = Column(Float)
-    amount = Column(Float)           # NULL：fqkline 不含成交额，见 stock_daily_quote
-    turnover_rate = Column(Float)    # NULL：fqkline 不含换手率，见 stock_daily_quote
-
-    data_source = Column(String(50), default="TencentFetcher")
-    created_at = Column(DateTime, default=datetime.now)
-    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
-
-    __table_args__ = (
-        UniqueConstraint("code", "date", "adj_type", name="uix_kline_code_date_adj"),
-        Index("ix_kline_code_date_adj", "code", "date", "adj_type"),
-    )
-
-    def __repr__(self):
-        return (
-            f"<StockDailyKline(code={self.code}, date={self.date}, "
-            f"adj={self.adj_type}, close={self.close})>"
-        )
-
-
 class StockDailyQuote(Base):
     """
     股票日线行情截面层（quote --date）
@@ -332,6 +207,33 @@ class StockDailyOhlcv(Base):
             f"<StockDailyOhlcv(code={self.code}, date={self.date}, "
             f"ktype={self.ktype}, adj={self.adj_type}, close={self.close})>"
         )
+
+    # ── 兼容属性：承接旧 stock_daily 下线后，上层按旧字段名访问的读路径 ──
+    # 旧表 StockDaily 用 pct_chg 表涨跌幅、turnover_rate 表换手率；本表分别为
+    # ratio / turnoverratio。提供只读别名，令回测/评估/历史加载等调用方无需改属性名。
+    @property
+    def pct_chg(self):  # noqa: D401 - 旧字段别名
+        return self.ratio
+
+    @property
+    def turnover_rate(self):  # noqa: D401 - 旧字段别名
+        return self.turnoverratio
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转字典（对齐旧 StockDaily.to_dict 的键，供 history_loader 等复用）。"""
+        return {
+            'code': self.code,
+            'date': self.date,
+            'open': self.open,
+            'high': self.high,
+            'low': self.low,
+            'close': self.close,
+            'volume': self.volume,
+            'amount': self.amount,
+            'pct_chg': self.ratio,
+            'turnover_rate': self.turnoverratio,
+            'data_source': self.data_source,
+        }
 
 
 class StockFinancialReport(Base):
@@ -1253,14 +1155,6 @@ class LLMUsage(Base):
     called_at = Column(DateTime, default=datetime.now, index=True)
 
 
-# stock_daily 原始行情扩展列：给旧库补齐（SQLite ALTER TABLE ADD COLUMN）
-_STOCK_DAILY_EXTRA_COLUMN_SQL: Dict[str, str] = {
-    "change_amount": "FLOAT",
-    "amplitude": "FLOAT",
-    "turnover_rate": "FLOAT",
-    "float_shares": "FLOAT",
-}
-
 _LLM_USAGE_TELEMETRY_COLUMN_SQL: Dict[str, str] = {
     "provider_usage_json": "TEXT",
     "provider": "VARCHAR(64)",
@@ -1632,7 +1526,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             # 创建所有表
             Base.metadata.create_all(self._engine)
             self._ensure_llm_usage_telemetry_columns()
-            self._ensure_stock_daily_columns()
             self._ensure_ohlcv_columns()
             self._ensure_rank_snapshot_schema()
             self._ensure_financial_report_table()
@@ -1863,54 +1756,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         Base.metadata.create_all(
             self._engine, tables=[StockRankRun.__table__, StockRankSnapshot.__table__]
         )
-
-    def _ensure_stock_daily_columns(self) -> None:
-        """给已存在的 stock_daily 表补齐原始行情扩展列（涨跌额/振幅/换手率）。
-
-        新库由 metadata.create_all 直接建全；旧库缺列时用 ALTER TABLE 补齐，
-        补上的列对历史行是 NULL，需重新拉取数据才会回填。
-        """
-        if not self._is_sqlite_engine:
-            return
-        try:
-            existing = {
-                column["name"]
-                for column in inspect(self._engine).get_columns(StockDaily.__tablename__)
-            }
-        except Exception as exc:
-            logger.warning(
-                "[stock_daily] 检查扩展列失败，跳过 SQLite 补列: %s", exc
-            )
-            return
-
-        max_retries = self._sqlite_write_retry_max
-        for column, column_type in _STOCK_DAILY_EXTRA_COLUMN_SQL.items():
-            if column in existing:
-                continue
-            for attempt in range(max_retries + 1):
-                try:
-                    with self._engine.begin() as connection:
-                        connection.exec_driver_sql(
-                            f"ALTER TABLE {StockDaily.__tablename__} "
-                            f"ADD COLUMN {column} {column_type}"
-                        )
-                    existing.add(column)
-                    logger.info("[stock_daily] 已补列: %s %s", column, column_type)
-                    break
-                except OperationalError as exc:
-                    if self._is_sqlite_duplicate_column_error(exc, column):
-                        existing.add(column)
-                        break
-                    if self._is_sqlite_locked_error(exc) and attempt < max_retries:
-                        delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
-                        logger.warning(
-                            "[stock_daily] 补列被锁，重试: %s (%s/%s, %.2fs)",
-                            column, attempt + 1, max_retries, delay,
-                        )
-                        if delay > 0:
-                            time.sleep(delay)
-                        continue
-                    raise
 
     def _ensure_financial_report_table(self) -> None:
         """确保 stock_financial_report 表结构与当前模型一致；不一致则删表重建。
@@ -2176,7 +2021,22 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             raise
         finally:
             session.close()
-    
+
+    @staticmethod
+    def _dedup_ohlcv_by_date(rows: List["StockDailyOhlcv"]) -> List["StockDailyOhlcv"]:
+        """按 date 去重 stock_daily_ohlcv 行，返回按 date 降序、每个交易日保留 id
+        最大（最新写入）一条的列表。
+
+        stock_daily_ohlcv 唯一键含 data_source，同一 (code,date) 可能存在多源行；
+        供 get_latest_data / get_data_range 返回「每交易日一条」的时间序列。
+        """
+        best: Dict[date, "StockDailyOhlcv"] = {}
+        for row in rows:
+            cur = best.get(row.date)
+            if cur is None or (row.id or 0) > (cur.id or 0):
+                best[row.date] = row
+        return [best[d] for d in sorted(best.keys(), reverse=True)]
+
     def has_today_data(self, code: str, target_date: Optional[date] = None) -> bool:
         """
         检查是否已有指定日期的数据
@@ -2195,24 +2055,26 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         # 注意：这里的 target_date 语义是“自然日”，而不是“最新交易日”。
         # 在周末/节假日/非交易日运行时，即使数据库已有最新交易日数据，这里也会返回 False。
         # 该行为目前保留（按需求不改逻辑）。
-        
+        # 统一数据表：读 stock_daily_ohlcv（日线 ktype=1、前复权 qfq），旧 stock_daily 已下线。
         with self.get_session() as session:
             result = session.execute(
-                select(StockDaily).where(
+                select(StockDailyOhlcv.id).where(
                     and_(
-                        StockDaily.code == code,
-                        StockDaily.date == target_date
+                        StockDailyOhlcv.code == code,
+                        StockDailyOhlcv.date == target_date,
+                        StockDailyOhlcv.ktype == "1",
+                        StockDailyOhlcv.adj_type == "qfq",
                     )
-                )
-            ).scalar_one_or_none()
-            
+                ).limit(1)
+            ).first()
+
             return result is not None
     
     def get_latest_data(
         self, 
         code: str, 
         days: int = 2
-    ) -> List[StockDaily]:
+    ) -> List["StockDailyOhlcv"]:
         """
         获取最近 N 天的数据
         
@@ -2223,17 +2085,23 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             days: 获取天数
             
         Returns:
-            StockDaily 对象列表（按日期降序）
+            StockDailyOhlcv 对象列表（按日期降序）
         """
+        # 统一数据表：读 stock_daily_ohlcv（日线/前复权）。同一 (code,date) 可能有
+        # 多个 data_source 行，按 date 去重（保留 id 最大的一条）后再取最近 days 天。
         with self.get_session() as session:
-            results = session.execute(
-                select(StockDaily)
-                .where(StockDaily.code == code)
-                .order_by(desc(StockDaily.date))
-                .limit(days)
+            rows = session.execute(
+                select(StockDailyOhlcv)
+                .where(
+                    and_(
+                        StockDailyOhlcv.code == code,
+                        StockDailyOhlcv.ktype == "1",
+                        StockDailyOhlcv.adj_type == "qfq",
+                    )
+                )
+                .order_by(desc(StockDailyOhlcv.date), desc(StockDailyOhlcv.id))
             ).scalars().all()
-            
-            return list(results)
+            return self._dedup_ohlcv_by_date(rows)[:days]
 
     def save_news_intel(
         self,
@@ -2941,7 +2809,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         code: str, 
         start_date: date, 
         end_date: date
-    ) -> List[StockDaily]:
+    ) -> List["StockDailyOhlcv"]:
         """
         获取指定日期范围的数据
         
@@ -2951,22 +2819,26 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             end_date: 结束日期
             
         Returns:
-            StockDaily 对象列表
+            StockDailyOhlcv 对象列表（按日期升序，同一交易日去重）
         """
+        # 统一数据表：读 stock_daily_ohlcv（日线/前复权），按 date 升序，
+        # 同一 (code,date) 多源行按 date 去重（保留 id 最大者）。
         with self.get_session() as session:
-            results = session.execute(
-                select(StockDaily)
+            rows = session.execute(
+                select(StockDailyOhlcv)
                 .where(
                     and_(
-                        StockDaily.code == code,
-                        StockDaily.date >= start_date,
-                        StockDaily.date <= end_date
+                        StockDailyOhlcv.code == code,
+                        StockDailyOhlcv.ktype == "1",
+                        StockDailyOhlcv.adj_type == "qfq",
+                        StockDailyOhlcv.date >= start_date,
+                        StockDailyOhlcv.date <= end_date,
                     )
                 )
-                .order_by(StockDaily.date)
+                .order_by(StockDailyOhlcv.date, desc(StockDailyOhlcv.id))
             ).scalars().all()
-            
-            return list(results)
+            # _dedup_ohlcv_by_date 返回按 date 降序；本方法约定升序，故反转。
+            return list(reversed(self._dedup_ohlcv_by_date(rows)))
     
     def save_daily_data(
         self, 
@@ -2995,33 +2867,38 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             return 0
 
         now = datetime.now()
+        # 统一落库到 stock_daily_ohlcv（日线 ktype=1、前复权 qfq）。唯一键含 data_source，
+        # 故写入固定这三个维度做幂等 upsert。旧 stock_daily 的 pct_chg→ratio、
+        # turnover→turnoverratio；MA/流通股本等派生列不再落库（特征工程阶段重算）。
+        _KTYPE = "1"
+        _ADJ = "qfq"
         records_by_date: Dict[date, Dict[str, Any]] = {}
-        # kline 层严格只写 OHLCV + 派生技术指标；换手率 / 流通股本 / 量比 属"截面口径"，
-        # 各数据源（新浪历史 kline 计算值 vs quote --date 权威值）差异大，统一由
-        # stock_daily_quote 独占（对齐 westock-data/test 的 kline vs quote --date 分层）。
         for row in df.to_dict(orient='records'):
             row_date = self._normalize_daily_date(row.get('date'))
             records_by_date[row_date] = {
                 'code': code,
                 'date': row_date,
+                'ktype': _KTYPE,
+                'adj_type': _ADJ,
                 'open': self._normalize_sql_value(row.get('open')),
                 'high': self._normalize_sql_value(row.get('high')),
                 'low': self._normalize_sql_value(row.get('low')),
                 'close': self._normalize_sql_value(row.get('close')),
                 'volume': self._normalize_sql_value(row.get('volume')),
                 'amount': self._normalize_sql_value(row.get('amount')),
-                'pct_chg': self._normalize_sql_value(row.get('pct_chg')),
-                'change_amount': self._normalize_sql_value(row.get('change_amount')),
-                'amplitude': self._normalize_sql_value(row.get('amplitude')),
-                # NOTE: turnover_rate / float_shares / volume_ratio 不再从 kline 落 stock_daily，
-                # 全部由 stock_daily_quote 承接；此处保留 None 以走 ORM 默认。
-                'turnover_rate': None,
-                'float_shares': None,
-                'ma5': self._normalize_sql_value(row.get('ma5')),
-                'ma10': self._normalize_sql_value(row.get('ma10')),
-                'ma20': self._normalize_sql_value(row.get('ma20')),
-                'volume_ratio': None,
+                # 涨跌幅：兼容旧列名 pct_chg / 源列名 ratio
+                'ratio': self._normalize_sql_value(
+                    row.get('ratio') if row.get('ratio') is not None else row.get('pct_chg')
+                ),
+                # 换手率：兼容 turnoverratio / turnover_rate
+                'turnoverratio': self._normalize_sql_value(
+                    row.get('turnoverratio')
+                    if row.get('turnoverratio') is not None
+                    else row.get('turnover_rate')
+                ),
+                'time': str(row_date),
                 'data_source': data_source,
+                'fetched_at': now,
                 'created_at': now,
                 'updated_at': now,
             }
@@ -3034,12 +2911,8 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
         def _write(session: Session) -> int:
             if self._is_sqlite_engine:
-                # SQLite has a per-statement bind-parameter limit (commonly 999).
-                # Each record has ~19 columns, so chunk upserts to stay within bounds.
+                # SQLite 每条语句绑定参数上限（约 999），按 chunk upsert。
                 _SQLITE_CHUNK = 40
-                # `_run_write_transaction()` opens SQLite writes with
-                # `BEGIN IMMEDIATE`, so existence checks and upsert execute
-                # within one stable write window.
                 existing_dates = set()
                 _COUNT_CHUNK = 500
                 for j in range(0, len(batch_dates), _COUNT_CHUNK):
@@ -3048,10 +2921,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                         continue
                     existing_dates.update(
                         session.execute(
-                            select(StockDaily.date).where(
+                            select(StockDailyOhlcv.date).where(
                                 and_(
-                                    StockDaily.code == code,
-                                    StockDaily.date.in_(chunk_dates),
+                                    StockDailyOhlcv.code == code,
+                                    StockDailyOhlcv.ktype == _KTYPE,
+                                    StockDailyOhlcv.adj_type == _ADJ,
+                                    StockDailyOhlcv.data_source == data_source,
+                                    StockDailyOhlcv.date.in_(chunk_dates),
                                 )
                             )
                         ).scalars().all()
@@ -3061,11 +2937,11 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 ]
                 for i in range(0, len(records), _SQLITE_CHUNK):
                     chunk = records[i : i + _SQLITE_CHUNK]
-                    stmt = sqlite_insert(StockDaily).values(chunk)
+                    stmt = sqlite_insert(StockDailyOhlcv).values(chunk)
                     excluded = stmt.excluded
                     session.execute(
                         stmt.on_conflict_do_update(
-                            index_elements=['code', 'date'],
+                            index_elements=['code', 'date', 'ktype', 'adj_type', 'data_source'],
                             set_={
                                 'open': excluded.open,
                                 'high': excluded.high,
@@ -3073,22 +2949,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                                 'close': excluded.close,
                                 'volume': excluded.volume,
                                 'amount': excluded.amount,
-                                'pct_chg': excluded.pct_chg,
-                                # 原始行情列（涨跌额/振幅）：仅当新值非空才覆盖，避免兜底源
-                                # 把已填好的历史值抹成 NULL（防数据回退）。
-                                'change_amount': func.coalesce(
-                                    excluded.change_amount, StockDaily.change_amount
-                                ),
-                                'amplitude': func.coalesce(
-                                    excluded.amplitude, StockDaily.amplitude
-                                ),
-                                # turnover_rate / float_shares / volume_ratio 不再由 kline
-                                # 更新（口径不准），保留 stock_daily 已有列以兼容旧库读数，
-                                # 权威值来自 stock_daily_quote（quote --date）。
-                                'ma5': excluded.ma5,
-                                'ma10': excluded.ma10,
-                                'ma20': excluded.ma20,
-                                'data_source': excluded.data_source,
+                                'ratio': excluded.ratio,
+                                'turnoverratio': excluded.turnoverratio,
+                                'time': excluded.time,
                                 'updated_at': excluded.updated_at,
                             },
                         )
@@ -3098,10 +2961,13 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 existing_rows = {
                     row.date: row
                     for row in session.execute(
-                        select(StockDaily).where(
+                        select(StockDailyOhlcv).where(
                             and_(
-                                StockDaily.code == code,
-                                StockDaily.date.in_(batch_dates),
+                                StockDailyOhlcv.code == code,
+                                StockDailyOhlcv.ktype == _KTYPE,
+                                StockDailyOhlcv.adj_type == _ADJ,
+                                StockDailyOhlcv.data_source == data_source,
+                                StockDailyOhlcv.date.in_(batch_dates),
                             )
                         )
                     ).scalars().all()
@@ -3110,7 +2976,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                 for record in records:
                     existing = existing_rows.get(record['date'])
                     if existing is None:
-                        session.add(StockDaily(**record))
+                        session.add(StockDailyOhlcv(**record))
                         new_count += 1
                         continue
                     existing.open = record['open']
@@ -3119,17 +2985,9 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     existing.close = record['close']
                     existing.volume = record['volume']
                     existing.amount = record['amount']
-                    existing.pct_chg = record['pct_chg']
-                    # 原始行情列（涨跌额/振幅）：仅当新值非空才覆盖，避免兜底源把已填值抹成 NULL
-                    if record['change_amount'] is not None:
-                        existing.change_amount = record['change_amount']
-                    if record['amplitude'] is not None:
-                        existing.amplitude = record['amplitude']
-                    # turnover_rate / float_shares / volume_ratio 不再由 kline 更新，
-                    # 权威值来自 stock_daily_quote（quote --date）
-                    existing.ma5 = record['ma5']
-                    existing.ma10 = record['ma10']
-                    existing.ma20 = record['ma20']
+                    existing.ratio = record['ratio']
+                    existing.turnoverratio = record['turnoverratio']
+                    existing.time = record['time']
                     existing.data_source = record['data_source']
                     existing.updated_at = record['updated_at']
                 return new_count
@@ -3278,125 +3136,6 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             logger.error("保存 %s quote 截面失败: %s", code, exc)
             raise
     
-    def save_daily_kline_data(
-        self,
-        records: List[Dict[str, Any]],
-        code: str,
-        *,
-        data_source: str = "TencentFetcher",
-        adj_type: str = "qfq",
-        overwrite: bool = True,
-    ) -> int:
-        """保存 kline 到 stock_daily_kline（code+date+adj_type upsert）。
-
-        数据源为 TencentFetcher（腾讯 fqkline）。amount/turnover_rate 恒为 NULL，
-        由 stock_daily_quote 表补。
-        """
-        if not records:
-            return 0
-
-        from data_provider.westock_fields import WESTOCK_KLINE_PERSIST_FIELDS
-
-        now = datetime.now()
-        kline_fields = WESTOCK_KLINE_PERSIST_FIELDS
-        by_date: Dict[date, Dict[str, Any]] = {}
-        for item in records:
-            row_date = self._normalize_daily_date(item.get("date"))
-            payload: Dict[str, Any] = {
-                "code": code,
-                "date": row_date,
-                "adj_type": item.get("adj_type") or adj_type,
-                "data_source": data_source,
-                "created_at": now,
-                "updated_at": now,
-            }
-            for field in kline_fields:
-                payload[field] = self._normalize_sql_value(item.get(field))
-            by_date[row_date] = payload
-
-        rows = list(by_date.values())
-        batch_dates = list(by_date.keys())
-
-        def _write(session: Session) -> int:
-            if self._is_sqlite_engine:
-                _CHUNK = 20
-                existing_dates = set()
-                for j in range(0, len(batch_dates), 500):
-                    chunk_dates = batch_dates[j : j + 500]
-                    if not chunk_dates:
-                        continue
-                    existing_dates.update(
-                        session.execute(
-                            select(StockDailyKline.date).where(
-                                and_(
-                                    StockDailyKline.code == code,
-                                    StockDailyKline.adj_type == adj_type,
-                                    StockDailyKline.date.in_(chunk_dates),
-                                )
-                            )
-                        ).scalars().all()
-                    )
-                new_count = sum(1 for d in batch_dates if d not in existing_dates)
-                for i in range(0, len(rows), _CHUNK):
-                    chunk = rows[i : i + _CHUNK]
-                    stmt = sqlite_insert(StockDailyKline).values(chunk)
-                    excluded = stmt.excluded
-                    update_map = {f: getattr(excluded, f) for f in kline_fields}
-                    update_map["data_source"] = excluded.data_source
-                    update_map["updated_at"] = excluded.updated_at
-                    if not overwrite:
-                        for f in kline_fields:
-                            update_map[f] = func.coalesce(
-                                getattr(excluded, f), getattr(StockDailyKline, f)
-                            )
-                    session.execute(
-                        stmt.on_conflict_do_update(
-                            index_elements=["code", "date", "adj_type"],
-                            set_=update_map,
-                        )
-                    )
-                return new_count if not overwrite else len(rows)
-
-            existing_rows = {
-                row.date: row
-                for row in session.execute(
-                    select(StockDailyKline).where(
-                        and_(
-                            StockDailyKline.code == code,
-                            StockDailyKline.adj_type == adj_type,
-                            StockDailyKline.date.in_(batch_dates),
-                        )
-                    )
-                ).scalars().all()
-            }
-            new_count = 0
-            for record in rows:
-                existing = existing_rows.get(record["date"])
-                if existing is None:
-                    session.add(StockDailyKline(**record))
-                    new_count += 1
-                    continue
-                for field in kline_fields:
-                    val = record.get(field)
-                    if val is None and not overwrite:
-                        continue
-                    if val is not None or overwrite:
-                        setattr(existing, field, val)
-                existing.data_source = record["data_source"]
-                existing.updated_at = record["updated_at"]
-            return new_count
-
-        try:
-            saved = self._run_write_transaction(
-                f"save_daily_kline_data[{code}]",
-                _write,
-            )
-            logger.info("保存 %s kline(%s) %d 条", code, adj_type, saved)
-            return saved
-        except Exception as exc:
-            logger.error("保存 %s kline 失败: %s", code, exc)
-            raise
-
     def save_ohlcv_kline(
         self,
         df: pd.DataFrame,
@@ -3746,12 +3485,25 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                     (today_data.close - yesterday_data.close) / yesterday_data.close * 100, 2
                 )
             
-            # 均线形态判断
-            context['ma_status'] = self._analyze_ma_status(today_data)
+            # 均线形态判断：stock_daily_ohlcv 不落库 MA，这里取最近 20 个交易日
+            # close 实时计算 ma5/ma10/ma20（不足则对应 MA 记 0，降级为震荡整理）。
+            context['ma_status'] = self._analyze_ma_status(
+                today_data, ma_map=self._recent_ma_map(code, today_data.date)
+            )
         
         return context
+
+    def _recent_ma_map(self, code: str, as_of: date) -> Dict[str, float]:
+        """基于 stock_daily_ohlcv 最近 close 序列实时计算 ma5/ma10/ma20（截至 as_of）。"""
+        rows = self.get_latest_data(code, days=20)  # 已按 date 降序去重
+        closes = [r.close for r in rows if r.close is not None and r.date <= as_of]
+        out: Dict[str, float] = {}
+        for win, key in ((5, "ma5"), (10, "ma10"), (20, "ma20")):
+            if len(closes) >= win:
+                out[key] = sum(closes[:win]) / win
+        return out
     
-    def _analyze_ma_status(self, data: StockDaily) -> str:
+    def _analyze_ma_status(self, data: "StockDailyOhlcv", ma_map: Optional[Dict[str, float]] = None) -> str:
         """
         分析均线形态
         
@@ -3759,14 +3511,15 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
         - 多头排列：close > ma5 > ma10 > ma20
         - 空头排列：close < ma5 < ma10 < ma20
         - 震荡整理：其他情况
+
+        注：stock_daily_ohlcv 不落库 MA（特征工程阶段重算），故 MA 由调用方
+        经 ma_map 传入（基于最近 close 序列实时计算）；未提供时降级为震荡整理。
         """
-        # 注意：这里的均线形态判断基于“close/ma5/ma10/ma20”静态比较，
-        # 未考虑均线拐点、斜率、或不同数据源复权口径差异。
-        # 该行为目前保留（按需求不改逻辑）。
         close = data.close or 0
-        ma5 = data.ma5 or 0
-        ma10 = data.ma10 or 0
-        ma20 = data.ma20 or 0
+        ma_map = ma_map or {}
+        ma5 = ma_map.get("ma5") or 0
+        ma10 = ma_map.get("ma10") or 0
+        ma20 = ma_map.get("ma20") or 0
         
         if close > ma5 > ma10 > ma20 > 0:
             return "多头排列 📈"

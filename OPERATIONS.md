@@ -14,76 +14,63 @@
 
 | 步骤 | 命令 | 耗时 | 频率 |
 |------|------|------|------|
-| ① 更新日线数据 | `python backfill.py kline --all --mode incremental` | 30-60 分钟 | 每周/每月一次 |
-| ① 更新指数数据 | `python backfill_index.py` | 1-2 分钟 | 同上 |
+| ① 更新日线数据 | `python backfill.py baidu --all --no-full --end <今天> --browser` | 30-60 分钟 | 每周/每月一次 |
+| ① 更新指数数据 | `python backfill.py baidu --symbols "000300" --no-full --end <今天> --browser` | 1-2 分钟 | 同上 |
 | ② 训练模型 | `python train_model.py --all --no-refresh --name trend_xsec --lookback 3000` | 50-60 分钟 | 有新数据后 |
 | ③ 生成强弱榜 | `python rank_snapshot.py` | 3-5 分钟 | 每次训练后 / 每日盘后 |
 | ④ 启动 Web UI | `python main.py --webui` | 即时 | 随时 |
+
+> 数据层已统一到 **`stock_daily_ohlcv`** 表：旧 `stock_daily` / `stock_daily_kline` 表及
+> `backfill.py kline`、`backfill_index.py` 已下线。个股与指数（沪深300）均由
+> `backfill.py baidu`（或 `westock-ohlcv` 增量）写入同一张 ohlcv 表。
 
 ---
 
 ## 步骤 ①：更新数据（有新数据时执行）
 
-### 1A. 更新个股日线（stock_daily_kline 表）
+### 1A. 更新个股日线（stock_daily_ohlcv 表）
 
-这是训练数据的主要来源，存的是前复权 K 线。
+这是训练数据的唯一来源，存的是前复权（qfq）OHLCV，单表自带换手率/成交额。
 
 ```bash
-# 增量更新：只补每只票缺失的最新几天（推荐日常用）
-python backfill.py kline --all --mode incremental
+# 尾窗口增量（推荐日常用）：仅拉最近约 2000 行，覆盖增量绰绰有余
+python backfill.py baidu --all --no-full --end 2026-07-11 \
+  --progress data/baidu_progress_tail.json --retry 3 --sleep 1.5 --ktype 1 --browser
 
-# 全量重拉：从 2010 年开始重新拉所有数据（数据损坏/首次部署时用）
-python backfill.py kline --all --mode full
-
-# 指定区间补数据
-python backfill.py kline --all --mode range --start 2025-01-01 --end 2025-06-30
+# westock 每日增量续写（百度段之后追加最新，无 IP 限制）
+python backfill.py westock-ohlcv --all --mode incremental \
+  --start 2010-01-01 --progress data/westock_ohlcv_progress.json --retry 2
 
 # 试跑：只拉前 50 只验证流程
-python backfill.py kline --all --mode incremental --limit 50
+python backfill.py baidu --all --no-full --end 2026-07-11 --limit 50 --browser
 ```
 
 **参数说明：**
 
 | 参数 | 说明 |
 |------|------|
-| `--all` | 全市场 A 股（约 5200 只） |
-| `--mode incremental` | 增量：只补每只票缺失的最近几天 |
-| `--mode full` | 全量：从 2010 年重新拉 |
-| `--mode range` | 精确区间：配合 `--start` / `--end` |
-| `--mode smart` | 智能补缺口 |
+| `--all` | 全市场 A 股（读 stocks.index.json） |
+| `--no-full` | 尾窗口：仅拉最近约 2000 行（老票≈2018 起，新股=上市日起） |
+| `--end` | 结束日（写当天即可，upsert 幂等、重复跑安全） |
+| `--browser` | 用本机 Chrome 签 token 抓取，规避百度 403 风控 |
+| `--sleep 1.5` | 限流秒数（防百度 403） |
 | `--limit N` | 只处理前 N 只（试跑用） |
-| `--retry 2` | 单只失败重试次数 |
-| `--sleep 0.0` | 请求间隔秒数（kline 很快，默认 0） |
-| `--adj qfq` | 复权类型（默认前复权，不要改） |
+| `--retry 3` | 单只失败重试次数 |
 
-**输出示例：**
-```
-===== kline 回填完成 =====
-计划总数: 5207
-实际拉取: 5200
-跳过(已最新): 7
-返回为空: 0
-失败:     0
-新增 kline 行: 5200
-====================
-```
+> 详见 `执行ohlcv.md`。所有个股日线统一落 `stock_daily_ohlcv`（旧 `backfill.py kline` 已下线）。
 
-### 1B. 更新大盘指数（stock_daily 表）
+### 1B. 更新大盘指数（沪深300，也落 stock_daily_ohlcv）
 
-指数数据用于训练时的「大盘环境特征」。之前的报错 `no such column: stock_daily.close` 就是因为这个表结构不对，但**不影响训练核心逻辑**，只是大盘特征填 0。
+指数数据用于训练时的「大盘环境特征」。沪深300 与个股同表（落库码恒为裸码 `000300`）。
 
 ```bash
-# 回填全部默认宽基指数（上证/沪深300/中证500/中证1000/深成/创业板）
-python backfill_index.py
-
-# 只回填沪深300
-python backfill_index.py --symbols 000300.SH
-
-# 查看默认指数清单
-python backfill_index.py --list
+# 日常拉取沪深300 最新（尾窗口，覆盖增量绰绰有余）
+python backfill.py baidu --symbols "000300" --no-full --end 2026-07-11 \
+  --progress data/baidu_index_tail.json --retry 3 --sleep 1.5 --ktype 1 --browser
 ```
 
-> **注意**：如果 `stock_daily` 表结构有列缺失问题，这一步可能仍会报错。这不影响训练（模型会中性化处理），但修复后能让大盘环境特征生效，理论上能提升一点准确率。
+> ⚠️ 必须加引号（前导零）；始终只传 `000300`，脚本内部会自动映射到百度指数请求码。
+> 旧 `backfill_index.py`（写旧 stock_daily 表）已下线，指数统一由 baidu 拉到 ohlcv。
 
 ---
 
@@ -245,11 +232,13 @@ python main.py --webui
 ### 场景 B：有新数据，重新训练模型
 
 ```bash
-# 1. 更新个股日线（增量）
-python backfill.py kline --all --mode incremental
+# 1. 更新个股日线（尾窗口增量）
+python backfill.py baidu --all --no-full --end 2026-07-11 --browser \
+  --progress data/baidu_progress_tail.json --retry 3 --sleep 1.5 --ktype 1
 
-# 2. 更新大盘指数
-python backfill_index.py
+# 2. 更新大盘指数（沪深300）
+python backfill.py baidu --symbols "000300" --no-full --end 2026-07-11 --browser \
+  --progress data/baidu_index_tail.json --retry 3 --sleep 1.5 --ktype 1
 
 # 3. 训练新模型（用本地缓存，不联网）
 python train_model.py --all --no-refresh --name trend_xsec --lookback 3000
@@ -264,11 +253,13 @@ python main.py --webui
 ### 场景 C：首次部署 / 数据全量重建
 
 ```bash
-# 1. 全量拉取个股日线（从2010年开始，耗时较长）
-python backfill.py kline --all --mode full
+# 1. 全量拉取个股日线（从 2015 年起，耗时较长）
+python backfill.py baidu --all --mode range --start 2015-01-01 --end 2026-07-11 --browser \
+  --progress data/baidu_progress.json --retry 3 --sleep 1.5 --ktype 1
 
-# 2. 全量拉取大盘指数
-python backfill_index.py
+# 2. 全量拉取大盘指数（沪深300）
+python backfill.py baidu --symbols "000300" --mode full --start 2010-01-01 --end 2026-07-11 --browser \
+  --progress data/baidu_index_full.json --retry 3 --sleep 1.5 --ktype 1
 
 # 3. 训练模型
 python train_model.py --all --no-refresh --name trend_xsec --lookback 3000
@@ -289,8 +280,8 @@ python rank_snapshot.py --schedule 17:30
 # 每日 18:30 自动训练（后台常驻）
 python train_model.py --all --no-refresh --name trend_xsec --lookback 3000 --schedule 18:30
 
-# 每日 16:30 自动增量回填 kline
-python backfill.py kline --all --mode incremental --schedule 16:30
+# 个股日线回填（baidu/westock-ohlcv）建议用系统计划任务/cron 每日触发，例如：
+#   python backfill.py baidu --all --no-full --end <今天> --browser ...
 ```
 
 ### 场景 E：模型效果不好，想回滚
@@ -315,4 +306,4 @@ python rank_snapshot.py
 3. **训练后必须跑 `rank_snapshot.py`** — 否则 Web UI 推荐页显示旧数据
 4. **模型自动激活** — 训练完成后新模型自动设为生产模型，旧模型保留可回滚
 5. **ST 股自动剔除** — 训练时自动排除 ST/退市风险股，无需手动处理
-6. **大盘指数报错可忽略** — `stock_daily.close` 列缺失不影响训练核心，只是大盘特征填 0
+6. **数据表已统一** — 全链路（回填/训练/预测/回测/快照）只用 `stock_daily_ohlcv`；旧 `stock_daily`、`stock_daily_kline` 表及 `backfill.py kline`、`backfill_index.py` 已下线

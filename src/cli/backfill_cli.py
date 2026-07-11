@@ -1,5 +1,5 @@
 # -*- coding: utf-8
-"""回填 CLI 公共逻辑（quote / kline 子命令）。"""
+"""回填 CLI 公共逻辑（quote / baidu / westock-ohlcv 子命令）。"""
 
 from __future__ import annotations
 
@@ -116,10 +116,8 @@ def print_progress_status(progress_path: str, *, dataset: str) -> None:
         title = "quote 回填进度台账"
     elif dataset == "baidu":
         title = "baidu 回填进度台账"
-    elif dataset == "westock-ohlcv":
-        title = "westock-ohlcv 回填进度台账"
     else:
-        title = "kline 回填进度台账"
+        title = "westock-ohlcv 回填进度台账"
     print(f"\n===== {title} =====")
     print(f"文件:     {progress_path}")
     extra = f"  复权={meta.get('adj_type')}" if meta.get("adj_type") else ""
@@ -154,27 +152,6 @@ def run_quote(args: argparse.Namespace) -> dict:
         retry_failed=args.retry_failed,
         limit=args.limit,
         progress_path=args.progress,
-    )
-
-
-def run_kline(args: argparse.Namespace) -> dict:
-    from src.services.backfill import KlineBackfillService
-
-    codes = resolve_codes(args)
-    logger.info("准备 kline 回填：%d 只股票", len(codes))
-    return KlineBackfillService().run(
-        codes,
-        start_date=args.start,
-        end_date=args.end,
-        mode=args.mode,
-        sleep=args.sleep,
-        retry=args.retry,
-        fresh_days=args.fresh_days,
-        force=args.force,
-        retry_failed=args.retry_failed,
-        limit=args.limit,
-        progress_path=args.progress,
-        adj=args.adj,
     )
 
 
@@ -241,12 +218,9 @@ def print_summary(stats: dict, *, dataset: str) -> None:
     elif dataset == "baidu":
         label = "baidu"
         rows_key = "baidu_rows"
-    elif dataset == "westock-ohlcv":
+    else:
         label = "westock-ohlcv"
         rows_key = "ohlcv_rows"
-    else:
-        label = "kline"
-        rows_key = "kline_rows"
     print(f"\n===== {label} 回填完成 =====")
     print(f"计划总数: {stats['total']}")
     print(f"实际拉取: {stats['fetched']}")
@@ -260,7 +234,7 @@ def print_summary(stats: dict, *, dataset: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="backfill",
-        description="市场日线回填统一入口：quote（不复权截面）与 kline（复权 K 线）",
+        description="市场日线回填统一入口：quote（不复权截面）/ baidu / westock-ohlcv（前复权 OHLCV → stock_daily_ohlcv）",
     )
     sub = parser.add_subparsers(dest="dataset", required=True)
 
@@ -288,33 +262,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     quote.add_argument("--schedule", type=str, default=None, metavar="HH:MM", help="每日定时回填")
     quote.add_argument("--no-run-immediately", action="store_true", help="定时模式启动时不先跑一次")
-
-    kline = sub.add_parser(
-        "kline",
-        help="westock kline 整段 → stock_daily_kline（快，OHLCV）",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "示例:\n"
-            "  python backfill.py kline --all --mode range --start 2021-01-01 --end 2022-12-31 \\\n"
-            "    --progress data/kline_progress_2021_2022.json --retry 2 --adj qfq\n"
-        ),
-    )
-    add_code_source_args(kline)
-    add_run_args(
-        kline,
-        defaults=argparse.Namespace(
-            start="2010-01-01",
-            mode="full",
-            fresh_days=4,
-            retry=2,
-            sleep=0.0,
-            progress=os.path.join("data", "kline_backfill_progress.json"),
-        ),
-    )
-    kline.add_argument(
-        "--adj", type=str, default="qfq", choices=["qfq", "hfq", "bfq"],
-        help="复权类型（默认 qfq 前复权）",
-    )
 
     baidu = sub.add_parser(
         "baidu",
@@ -424,7 +371,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.dataset == "westock-ohlcv":
         runner = run_westock_ohlcv
     else:
-        runner = run_quote if args.dataset == "quote" else run_kline
+        runner = run_quote
     stats = runner(args)
     print_summary(stats, dataset=args.dataset)
     return 0
