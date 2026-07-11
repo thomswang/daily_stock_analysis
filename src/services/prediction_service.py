@@ -1023,6 +1023,7 @@ def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
     统一经「训练/预测行情数据网关」取数（默认 stock_daily_ohlcv，不回退）；
     查不到则返回空 DataFrame，build_features 会据此把大盘特征中性填 0。
     """
+    # 进程内缓存：命中即静默返回，只在「首次真正加载」时打印一条日志，避免逐票刷屏
     if index_code in _MARKET_DF_CACHE:
         return _MARKET_DF_CACHE[index_code]
     df = pd.DataFrame()
@@ -1039,7 +1040,14 @@ def load_market_df(index_code: str = DEFAULT_MARKET_INDEX) -> pd.DataFrame:
     except Exception as exc:  # noqa: BLE001 - 缺指数不应中断预测/训练
         logger.debug("加载大盘指数 %s 失败（将中性处理）: %s", index_code, exc)
     if df.empty:
-        logger.warning("大盘指数 %s 无本地数据，环境特征将中性填 0（请先回填沪深300）", index_code)
+        # 加载不到：环境特征整列中性填 0，仅打一次 warning 提示回填
+        logger.warning("大盘指数 %s 无本地数据，环境特征已中性填 0（请先回填沪深300）", index_code)
+    else:
+        # 加载成功：整进程仅打印这一次，告知大盘环境特征已参与构造
+        logger.info(
+            "大盘指数 %s 加载成功并参与环境特征构造：%d 行（%s ~ %s）",
+            index_code, len(df), df["date"].min(), df["date"].max(),
+        )
     _MARKET_DF_CACHE[index_code] = df
     return df
 
