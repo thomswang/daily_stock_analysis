@@ -101,7 +101,7 @@ class StockRankingService:
             lookback_days=lookback_days, resolve_name=False, refresh=False,
         )
         if not scored:
-            raise StockRankingError("全市场打分结果为空（缓存数据不足？先跑 python backfill.py quote/kline）")
+            raise StockRankingError("全市场打分结果为空（缓存数据不足？先跑 python backfill.py baidu / quote / westock-ohlcv 准备 stock_daily_ohlcv 数据）")
 
         # 附行业 + 名称（免联网）
         for it in scored:

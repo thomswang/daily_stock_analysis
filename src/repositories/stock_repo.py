@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from typing import Optional, List, Dict, Any, Iterable, Tuple
 
 import pandas as pd
-from sqlalchemy import and_, desc, func, select
+from sqlalchemy import and_, bindparam, desc, func, select, text
 
 from src.storage import DatabaseManager, StockDailyQuote, StockDailyOhlcv
 
@@ -436,34 +436,57 @@ class StockRepository:
             with self.db.get_session() as session:
                 for i in range(0, len(query_codes), batch_size):
                     batch = query_codes[i : i + batch_size]
-                    stmt = (
-                        select(StockDailyOhlcv)
-                        .where(
-                            StockDailyOhlcv.code.in_(batch),
-                            StockDailyOhlcv.ktype == ktype,
-                            StockDailyOhlcv.adj_type == adj_type,
-                            StockDailyOhlcv.date >= start_date,
-                            StockDailyOhlcv.date <= end_date,
+                    # 强制走 (code,date,adj_type) 复合索引：stock_daily_ohlcv 有 870 万+ 行，
+                    # SQLite 优化器（无统计信息）会误选单列 adj_type 索引，退化为对全部
+                    # qfq 行做全表扫描，导致训练/预测取数卡死数分钟。用 INDEXED BY 显式指定
+                    # 后，同样查询从数十秒降到 0.03s。
+                    # 注：SQLAlchemy 的 with_hint 对 SQLite 不可靠（生成的 [INDEXED BY] 在
+                    # 运行时被忽略），故这里用 text() 直出带 INDEXED BY 的 SQL。
+                    sql = text(
+                        """
+                        SELECT code, date, open, high, low, close, volume, amount,
+                               turnoverratio
+                        FROM stock_daily_ohlcv INDEXED BY ix_ohlcv_code_date_adj
+                        WHERE code IN :codes
+                          AND ktype = :ktype
+                          AND adj_type = :adj_type
+                          AND date >= :start
+                          AND date <= :end
+                        ORDER BY code, date
+                        """
+                    ).bindparams(bindparam("codes", expanding=True))
+                    rows = (
+                        session.execute(
+                            sql,
+                            {
+                                "codes": tuple(batch),
+                                "ktype": ktype,
+                                "adj_type": adj_type,
+                                "start": start_date,
+                                "end": end_date,
+                            },
                         )
-                        .order_by(StockDailyOhlcv.code, StockDailyOhlcv.date)
+                        .mappings()
+                        .all()
                     )
-                    rows = session.execute(stmt).scalars().all()
                     if not rows:
                         continue
-                    records: List[Dict[str, Any]] = []
-                    for row in rows:
-                        records.append({
-                            "code": row.code,
-                            "date": row.date,
-                            "open": row.open,
-                            "high": row.high,
-                            "low": row.low,
-                            "close": row.close,
-                            "volume": row.volume,
-                            "amount": row.amount,
+                    records: List[Dict[str, Any]] = [
+                        {
+                            "code": r["code"],
+                            # text() 不走 ORM 类型转换，date 为原始字符串，这里转回 date 对齐
+                            "date": pd.to_datetime(r["date"]).date(),
+                            "open": r["open"],
+                            "high": r["high"],
+                            "low": r["low"],
+                            "close": r["close"],
+                            "volume": r["volume"],
+                            "amount": r["amount"],
                             # 换手率：ohlcv 列名 turnoverratio → 统一契约 turnover_rate
-                            "turnover_rate": row.turnoverratio,
-                        })
+                            "turnover_rate": r["turnoverratio"],
+                        }
+                        for r in rows
+                    ]
                     chunk = pd.DataFrame(records)
                     chunk["code"] = chunk["code"].astype(str).str.upper()
                     for code, group in chunk.groupby("code", sort=False):

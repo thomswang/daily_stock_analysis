@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""采集层协议：K 线（时间序列）与 quote（截面）分离。"""
+"""采集层协议：quote（截面）与 K 线（时间序列，统一落 stock_daily_ohlcv）分离。"""
 
 from __future__ import annotations
 
@@ -8,12 +8,6 @@ from datetime import date
 from typing import Optional, Protocol
 
 import pandas as pd
-
-
-@dataclass(frozen=True)
-class KlineFetchResult:
-    df: pd.DataFrame
-    source: str
 
 
 @dataclass(frozen=True)
@@ -33,20 +27,6 @@ class KlinePersistResult:
 class QuoteFetchResult:
     rows_saved: int
     source: str
-
-
-class KlineIngestor(Protocol):
-    """第 1 层：一次拉 N 天 OHLCV → stock_daily。"""
-
-    source_name: str
-
-    def fetch(
-        self,
-        code: str,
-        *,
-        start: date,
-        end: date,
-    ) -> KlineFetchResult: ...
 
 
 class QuoteIngestor(Protocol):

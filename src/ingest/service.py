@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-日线采集编排器（quote 截面 + kline 时间序列，分表落库）。
+日线采集编排器（quote 截面落库）。
 
 - quote --date → stock_daily_quote（不复权，40+ 字段，慢）
-- kline 整段   → stock_daily_kline（前复权 qfq，8 字段，快）
+- K 线时间序列统一走 stock_daily_ohlcv（backfill.py baidu / westock-ohlcv）
+
+旧 stock_daily_kline 表已下线，相关写入逻辑已移除。
 """
 
 from __future__ import annotations
@@ -59,36 +61,6 @@ class DailyIngestService:
         """拉取 [start, end] 每个工作日 quote --date 并落库。"""
         return self.ingest_quote(
             code, start=start, end=end, overwrite=quote_overwrite,
-        )
-
-    def ingest_kline(
-        self,
-        code: str,
-        *,
-        start: date,
-        end: date,
-    ) -> IngestResult:
-        """腾讯 fqkline 整段 → stock_daily_kline。
-
-        ⚠️ 已下线：stock_daily_kline 表与其写入方法(save_daily_kline_data)已移除，
-        本方法保留请求/抓取逻辑但不再有可用的落库路径，调用会失败。
-        统一改用 stock_daily_ohlcv 链路：backfill.py baidu / westock-ohlcv。
-        """
-        if not is_cn_a_share(code):
-            return IngestResult(0, 0, "", None)
-        from src.ingest.tencent_kline import TencentKlineIngestor
-
-        ingestor = TencentKlineIngestor(db_manager=self.repo.db)
-        result = ingestor.backfill(code, start=start, end=end)
-        logger.info(
-            "%s kline 采集完成 [%s~%s]: +%d 行",
-            code, start, end, result.rows_saved,
-        )
-        return IngestResult(
-            kline_added=result.rows_saved,
-            quote_added=0,
-            kline_source=result.source,
-            quote_source=None,
         )
 
     def ingest_quote(
