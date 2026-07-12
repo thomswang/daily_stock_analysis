@@ -996,6 +996,7 @@ def _load_daily_df(
     use_cache: bool = True,
     refresh: bool = True,
     resolve_name: bool = True,
+    online_fallback: bool = True,
 ) -> tuple[pd.DataFrame, Optional[str]]:
     """加载日线数据：读透缓存（read-through cache）策略。
 
@@ -1006,6 +1007,10 @@ def _load_daily_df(
     4. 联网失败但缓存样本足够 → 降级用缓存；否则抛 PredictionError
 
     这样同一只票的反复预测不再每次联网，也与项目已有的数据缓存打通。
+
+    online_fallback=False 时为「纯本地」模式（全市场快照必用）：缓存不足也绝不联网，
+    直接返回现有缓存交由上层跳过。注意 refresh=False 仅跳过「缓存新鲜度检查」，并不
+    阻止「缓存缺失时的联网兜底」；要真正零联网必须同时 online_fallback=False。
     """
     from data_provider.base import DataFetcherManager, DataFetchError
 
@@ -1020,6 +1025,13 @@ def _load_daily_df(
         # 缓存命中是高频正常路径，降为 DEBUG，避免批量打分时刷屏淹没关键日志；
         # 排查时打开 DEBUG 级别仍可逐票查看。
         logger.debug("预测使用本地缓存数据: %s（%d 条，命中缓存免联网）", stock_code, len(cached))
+        name = _safe_stock_name(stock_code) if resolve_name else None
+        return cached, name
+
+    # 纯本地模式：不联网兜底。缓存不足时返回现有缓存（可能为空/不足），
+    # 上层 build_features 会据此跳过该票，从而实现全市场快照零联网。
+    if not online_fallback:
+        logger.debug("[local-only] %s 本地缓存 %d 条（不足则跳过，不联网）", stock_code, len(cached))
         name = _safe_stock_name(stock_code) if resolve_name else None
         return cached, name
 
@@ -1181,6 +1193,7 @@ def score_codes(
     lookback_days: int = 250,
     resolve_name: bool = True,
     refresh: bool = True,
+    online_fallback: bool = True,
     industry_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """给一批股票打「强弱分」(最新特征喂横截面模型)。
@@ -1188,7 +1201,8 @@ def score_codes(
     纯打分、不排序不加权(排序/分位/权重由调用方按其票池口径计算)，供
     rank_stocks 与选股推荐服务共用。单票失败自动跳过、不中断整批。
 
-    refresh=False 时仅用本地缓存(全市场扫描必用，避免上千次联网)。
+    refresh=False 时跳过缓存新鲜度检查；online_fallback=False 时缓存缺失也不联网
+    (全市场扫描必用，二者配合可彻底避免上千次联网)。
 
     ── 架构级：横截面特征归一（与训练侧对称）──
     当 ENABLE_CROSS_SECTION_NORM 开启时，先收集全部票的最新特征行，再按「同日[同行业]」
@@ -1209,7 +1223,10 @@ def score_codes(
         if not code:
             continue
         try:
-            df, name = _load_daily_df(code, lookback_days, refresh=refresh, resolve_name=resolve_name)
+            df, name = _load_daily_df(
+                code, lookback_days, refresh=refresh,
+                resolve_name=resolve_name, online_fallback=online_fallback,
+            )
             if df is None or df.empty:
                 continue
             feats = build_features(df, market_df=market_df)

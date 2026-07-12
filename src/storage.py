@@ -61,6 +61,24 @@ from src.utils.sniper_points import extract_sniper_points, parse_sniper_value
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
+
+
+def _register_sqlite_datetime_adapters() -> None:
+    """显式注册 sqlite3 的 date/datetime 适配器（消除 Python 3.12 的废弃警告）。
+
+    Python 3.12 起废弃了 sqlite3 内置的默认 date/datetime 适配器，写入含日期的记录
+    （如 stock_rank_run.as_of_date / generated_at）会持续抛 DeprecationWarning。
+    这里按官方推荐做法以 ISO 文本落库，读取仍由 SQLAlchemy 的 Date/DateTime 类型解析，
+    与既有 schema 完全兼容。仅需在进程内注册一次。
+    """
+    import sqlite3
+
+    sqlite3.register_adapter(date, lambda d: d.isoformat())
+    sqlite3.register_adapter(datetime, lambda d: d.isoformat(sep=" "))
+
+
+_register_sqlite_datetime_adapters()
+
 CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 

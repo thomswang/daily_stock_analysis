@@ -98,7 +98,8 @@ class StockRankingService:
 
         scored = score_codes(
             codes, model=model, market_df=load_market_df(),
-            lookback_days=lookback_days, resolve_name=False, refresh=False,
+            lookback_days=lookback_days, resolve_name=False,
+            refresh=False, online_fallback=False,  # 纯本地：缓存不足即跳过，绝不联网
             industry_map=ind_map,  # 横截面特征归一按行业分组，与训练侧行业中性口径一致
         )
         if not scored:
