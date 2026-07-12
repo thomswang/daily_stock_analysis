@@ -216,6 +216,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--list", action="store_true", help="列出已训练的模型版本")
     parser.add_argument("--list-limit", type=int, default=30, help="--list 显示的条数（默认 30）")
     parser.add_argument("--activate", type=int, default=None, metavar="ID", help="将指定 id 的模型设为激活版本")
+    parser.add_argument("--delete-except", type=int, default=None, metavar="ID",
+                        help="删除除指定 id 以外的所有模型记录（谨慎使用，不可恢复）")
     parser.add_argument("--debug", action="store_true", help="调试日志")
     return parser.parse_args()
 
@@ -231,6 +233,13 @@ def main() -> int:
 
     if args.activate is not None:
         _activate_model(args.activate)
+        return 0
+
+    if args.delete_except is not None:
+        from src.repositories.prediction_model_repo import PredictionModelRepository
+
+        n = PredictionModelRepository().delete_except(args.delete_except)
+        print(f"已删除 {n} 个模型，保留 id={args.delete_except} 并设为激活。")
         return 0
 
     if args.schedule:

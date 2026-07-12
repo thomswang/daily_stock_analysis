@@ -134,6 +134,21 @@ class PredictionModelRepository:
             session.commit()
             return True
 
+    def delete_except(self, keep_id: int) -> int:
+        """删除除 keep_id 以外的全部模型记录，并将 keep_id 设为激活。返回删除条数。"""
+        from sqlalchemy import delete as _sa_delete
+
+        with self.db.get_session() as session:
+            keep = session.get(PredictionModel, keep_id)
+            if keep is None:
+                raise SystemExit(f"未找到模型 id={keep_id}，无法执行删除保留")
+            deleted = session.execute(
+                _sa_delete(PredictionModel).where(PredictionModel.id != keep_id)
+            ).rowcount
+            keep.is_active = True  # 保证保留模型处于激活态
+            session.commit()
+            return int(deleted)
+
     @staticmethod
     def _to_dict(row: PredictionModel) -> Dict[str, Any]:
         def _load(raw: Optional[str], default: Any) -> Any:

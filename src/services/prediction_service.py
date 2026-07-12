@@ -61,13 +61,6 @@ FEATURE_LABELS: Dict[str, Dict[str, str]] = {
     "body_ratio": {"zh": "K线实体占比", "en": "Candle body ratio"},
     "close_position": {"zh": "收盘位置(当日区间)", "en": "Close position in range"},
     "gap_open": {"zh": "跳空幅度", "en": "Opening gap"},
-    # ── 量价 ──
-    "volume_ratio": {"zh": "成交量比率", "en": "Volume ratio"},
-    "volume_trend": {"zh": "量能趋势(5/20)", "en": "Volume trend (5/20)"},
-    "pv_corr_10": {"zh": "10日量价相关性", "en": "10-day price-volume corr"},
-    # ── 换手率（数据源直供，非 OHLCV 可派生，含流通盘信息）──
-    "turnover_norm": {"zh": "换手率(绝对)", "en": "Turnover rate"},
-    "turnover_rel": {"zh": "换手率相对20日均值", "en": "Turnover vs 20d avg"},
     # ── 大盘/环境（需传入指数日线 market_df；缺失时中性填 0）──
     # A 股个股短期方向很大程度由大盘 β 驱动，补上环境维度是提准确率的最大杠杆。
     "mkt_ma20_dev": {"zh": "大盘20日均线偏离", "en": "Index MA20 deviation"},
@@ -76,104 +69,23 @@ FEATURE_LABELS: Dict[str, Dict[str, str]] = {
     "mkt_volatility_20": {"zh": "大盘20日波动率", "en": "Index 20-day volatility"},
     "rel_strength_5": {"zh": "相对大盘强弱(5日)", "en": "Rel. strength vs index (5d)"},
     "rel_strength_20": {"zh": "相对大盘强弱(20日)", "en": "Rel. strength vs index (20d)"},
-    # ── 资金面（成交额 amount：量价配合/背离，捕捉主力资金博弈方向，而非重复成交量）──
-    "amt_vol_divergence": {"zh": "量价背离(价强-量强)", "en": "Vol-price divergence"},
-    "amt_abn_volume": {"zh": "异常放量(量偏离-价偏离)", "en": "Abnormal volume"},
-    "amt_chg_x_ret": {"zh": "带符号资金流(额动×收益)", "en": "Signed fund flow"},
 }
 
-# ── 资金面(成交额)特征开关（A/B 验证用）──
-# 默认开启：模型含成交额派生的 3 个资金面特征（量价配合/背离类）。
-# 设环境变量 ENABLE_AMOUNT_FEATURES=0 运行：剔除资金面，退化为纯量价+换手+大盘环境（29 维），
-# 用于对照实验隔离 amount 的增量贡献。生产默认保持开启。
-import os as _os
-ENABLE_AMOUNT_FEATURES = _os.environ.get("ENABLE_AMOUNT_FEATURES", "1") != "0"
-AMOUNT_FEATURE_KEYS = ["amt_vol_divergence", "amt_abn_volume", "amt_chg_x_ret"]
+# 特征口径：纵向（每只票与自身历史比），直接喂横截面排序标签模型。
+# 重构前(9f0008b)即此口径；特征横截面归一(ENABLE_CROSS_SECTION_NORM)为 ea9b0d0 引入，
+# 本次恢复时移除——特征保持纵向，标签仍为同日同行业横截面排名。
+# 成交量/换手率/资金面(amount)特征已全部移除：模型仅用价格类 + 大盘环境特征。
 
-# ── 横截面特征归一开关（架构级 A/B 验证用）──
-# 默认开启：cross_section 标签下，把个股纵向特征转成「同日同行业截面分位」，使特征口径
-# 与排名标签口径一致（详见 cross_sectional_normalize）。训练/预测对称生效。
-# 设 ENABLE_CROSS_SECTION_NORM=0 关闭，退回旧的「纵向特征直喂横截面标签」口径，用于对照。
-ENABLE_CROSS_SECTION_NORM = _os.environ.get("ENABLE_CROSS_SECTION_NORM", "1") != "0"
-
-
-def _build_feature_order() -> list:
-    """按开关构建特征序：关闭资金面时剔除对应 3 个特征。"""
-    order = list(FEATURE_LABELS.keys())
-    if not ENABLE_AMOUNT_FEATURES:
-        order = [k for k in order if k not in AMOUNT_FEATURE_KEYS]
-    return order
-
-
-FEATURE_ORDER = _build_feature_order()
+FEATURE_ORDER = list(FEATURE_LABELS.keys())
 
 # 数据源/入参可能不提供的扩展特征：整列缺失时以 0(中性)填充，
 # 避免这些列的 NaN 把整只股票的样本在 dropna 时清空
-# （兼容无换手率的兜底源，以及未传入 market_df 的调用方）。
+# （兼容未传入 market_df 的调用方）。
 _MARKET_FEATURES = (
     "mkt_ma20_dev", "mkt_momentum_20", "mkt_rsi_14", "mkt_volatility_20",
     "rel_strength_5", "rel_strength_20",
 )
-_OPTIONAL_FEATURES = ("turnover_norm", "turnover_rel") + _MARKET_FEATURES
-
-# ── 横截面归一（cross-sectional rank）──────────────────────────────────
-# 架构关键：本项目的标签是「同日(同行业)内横截面排名」，但 build_features 产出的
-# 特征全是「个股自身纵向」值（每只票只和自己历史比）。这会造成「特征口径 ≠ 标签口径」
-# 的错配——模型被迫从纵向绝对值里猜横向排名，天花板受限。
-#
-# 解法：在「特征汇聚后、喂模型前」，把个股特征转成「当日(同行业)内的横截面分位」，
-# 使 特征口径 = 标签口径 = 排名口径。训练与预测**对称**调用同一函数（口径唯一），
-# 不产生线上裂缝。
-#
-# 大盘环境特征(_MARKET_FEATURES)在同一天对所有票取值相同，做截面 rank 会退化为常数
-# 0.5（无信息），故排除在外、保留其原始纵向值（它们本就是"当日大盘环境"的绝对度量）。
-CROSS_SECTION_EXCLUDE = set(_MARKET_FEATURES)
-
-
-def cross_sectional_normalize(
-    X: np.ndarray,
-    dates: np.ndarray,
-    groups: Optional[np.ndarray] = None,
-    *,
-    feature_order: Optional[List[str]] = None,
-) -> np.ndarray:
-    """把特征矩阵按「同日(可选同行业)」做横截面分位归一（rank→(0,1)），返回新矩阵。
-
-    - 对每个 (date[, group]) 分组，对组内每个可归一特征列做 pct rank（method=average），
-      得到该票在当日截面里的相对位置 (0,1]，再中心化到 [-0.5, 0.5] 便于树/线性模型使用。
-    - 排除 CROSS_SECTION_EXCLUDE（大盘环境列）：这些列同日同值，rank 无意义，原样保留。
-    - 组内样本数 < 2 时该组保持原值（无法排名）。
-
-    参数与训练/预测两侧完全一致，保证口径唯一：
-        X            : (n, d) 特征矩阵（列序 = feature_order）
-        dates        : (n,) 每行的交易日（可为 datetime64/str，内部统一）
-        groups       : (n,) 每行的分组键（如行业）；None=仅按日期分组（全市场截面）
-        feature_order: 列名序，默认用全局 FEATURE_ORDER
-    """
-    order = list(feature_order) if feature_order is not None else list(FEATURE_ORDER)
-    if X.size == 0 or len(order) != X.shape[1]:
-        return X
-    # 参与归一的列索引（排除大盘环境列）
-    norm_cols = [i for i, name in enumerate(order) if name not in CROSS_SECTION_EXCLUDE]
-    if not norm_cols:
-        return X
-
-    d = pd.to_datetime(pd.Series(dates), errors="coerce").to_numpy()
-    df = pd.DataFrame(X[:, norm_cols], columns=[order[i] for i in norm_cols])
-    df["_d"] = d
-    if groups is not None:
-        df["_g"] = np.asarray(groups)
-        key = ["_d", "_g"]
-    else:
-        key = ["_d"]
-
-    # 组内 pct-rank：一次性向量化（groupby.rank），再中心化到 [-0.5, 0.5]
-    ranked = df.groupby(key)[[order[i] for i in norm_cols]].rank(pct=True, method="average")
-    ranked = ranked.to_numpy() - 0.5
-
-    out = X.copy()
-    out[:, norm_cols] = ranked
-    return out
+_OPTIONAL_FEATURES = _MARKET_FEATURES
 
 
 # 标签口径（默认）：预测"未来 N 日"方向，而非噪声很大的"次日"。
@@ -466,10 +378,11 @@ def _align_market_close(dates: pd.Series, market_df: Optional[pd.DataFrame]) -> 
 def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """由日线 DataFrame 构造技术因子矩阵。
 
-    df 需包含列：date, open, high, low, close, volume（可选 turnover_rate）
+    df 需包含列：date, open, high, low, close
     market_df：可选的大盘指数日线（需含 date, close）。传入则派生"大盘环境/相对
         强弱"特征；不传则这些列整列缺失、按 _OPTIONAL_FEATURES 中性填 0（行为向后兼容）。
     返回：包含 FEATURE_ORDER 各列 + close + date 的 DataFrame（已 dropna）
+    注：成交量/换手率/资金面(amount)特征已移除，本函数仅产出价格类 + 大盘环境特征。
 
     所有因子仅用当日及更早数据（rolling/shift 回看），保证防未来函数；
     并做无量纲归一化（比例/相对价格/0~1 区间），避免量纲干扰梯度下降。
@@ -484,13 +397,6 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     open_ = data["open"].astype(float) if "open" in data else close
     high = data["high"].astype(float) if "high" in data else close
     low = data["low"].astype(float) if "low" in data else close
-    volume = data["volume"].astype(float) if "volume" in data else pd.Series(np.nan, index=data.index)
-    # 换手率（数据源直供，%）；缺列则整列 NaN，后续以 0 中性填充
-    turnover = (
-        pd.to_numeric(data["turnover_rate"], errors="coerce")
-        if "turnover_rate" in data.columns
-        else pd.Series(np.nan, index=data.index)
-    )
 
     # fill_method=None：pandas 2.x 默认前向填充缺失值，会在停牌日"借用"前一日的收益，
     # 导致特征产生虚假信号。显式禁用前填，保证停牌日 ret 为 NaN（后续 dropna 剔除）。
@@ -501,8 +407,6 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     ma10 = close.rolling(10, min_periods=10).mean()
     ma20 = close.rolling(20, min_periods=20).mean()
     std20 = close.rolling(20, min_periods=20).std()
-    vol_ma5 = volume.rolling(5, min_periods=5).mean()
-    vol_ma20 = volume.rolling(20, min_periods=20).mean()
 
     # 当日区间/实体（防止除零：用 NaN 兜底，最后 dropna）
     hl = (high - low).replace(0, np.nan)
@@ -548,60 +452,6 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     feats["body_ratio"] = (close - open_) / hl
     feats["close_position"] = (close - low) / hl
     feats["gap_open"] = (open_ - prev_close) / prev_close
-    # ── 量价 ──
-    feats["volume_ratio"] = (volume / vol_ma5) - 1.0
-    feats["volume_trend"] = (vol_ma5 / vol_ma20) - 1.0
-    feats["pv_corr_10"] = ret.rolling(10, min_periods=10).corr(volume.pct_change(fill_method=None))
-    # ── 换手率 ──
-    turn_ma20 = turnover.rolling(20, min_periods=5).mean()
-    feats["turnover_norm"] = turnover / 100.0                              # 绝对换手率(小数)
-    feats["turnover_rel"] = (turnover / turn_ma20.replace(0, np.nan)) - 1.0  # 相对20日均值的活跃度
-
-    # ── 资金面（成交额 amount：量价配合/背离，捕捉主力资金博弈方向）──
-    # 关键设计：amount = 价格×成交量，若只做"绝对放量/缩量"会与已有 volume/turnover 特征
-    # 高度共线（amount 偏离≈volume 偏离），无增量信息。故此处改为「量价配合/背离」类交叉
-    # 特征，专门刻画 amount 独有的「资金是否配合价格方向」信号。
-    # 受 ENABLE_AMOUNT_FEATURES 开关控制：关闭时本段整体跳过，模型退化为纯量价 29 维。
-    # 全部向量化构造（无 rolling.apply），避免逐票训练时性能崩塌；仅用历史数据防未来函数。
-    if ENABLE_AMOUNT_FEATURES:
-        amount_s = (
-            pd.to_numeric(data["amount"], errors="coerce")
-            if "amount" in data.columns
-            else pd.Series(np.nan, index=data.index)
-        )
-        momentum_5 = close.pct_change(periods=5)  # 5日动量（与 feats["momentum_5"] 同源），供下方量价配合特征使用
-        N = 20  # 量价背离观察窗口
-
-        # 关键量纲修正：amount(成交额=价×量) 才是"资金强度"的正确度量，volume(股数)会与
-        # 已有 volume_ratio/volume_trend 共线。故资金强度统一用 amount 派生，并全部做
-        # 「个股内部自比」的无量纲化（rolling z-score / 分位），使不同价位/流通盘的票在
-        # 横截面标签下阈值可比——这是之前 amount 零贡献的根因（绝对量级横截面不可比）。
-
-        # 用 amount 的滚动均值/标准差做 z-score，衡量"当前资金强度相对自身近 N 日的异常度"
-        amt_ma = amount_s.rolling(N, min_periods=N).mean()
-        amt_std = amount_s.rolling(N, min_periods=N).std().replace(0, np.nan)
-        amt_z = ((amount_s - amt_ma) / amt_std)  # 资金强度 z-score（无量纲、横截面可比）
-
-        # 1) 量价背离：价格 N 日区间位置 − 资金强度 N 日区间位置（用 amount 而非 volume）
-        #    >0 = 价在高位但资金未跟上（放量滞涨风险/顶背离）；<0 = 资金已放量但价未起（蓄势/底背离）
-        rng = lambda s: (s - s.rolling(N, min_periods=N).min()) / (
-            (s.rolling(N, min_periods=N).max() - s.rolling(N, min_periods=N).min()).replace(0, np.nan)
-        )
-        price_pos = rng(close)
-        amt_pos = rng(amount_s)
-        feats["amt_vol_divergence"] = (price_pos - amt_pos).fillna(0.0)
-
-        # 2) 异常放量：资金强度 z-score − 短期动量 z-score（两者都无量纲，修正旧版量级错配 bug）
-        #    高 = 资金异常放大但价格没怎么动 = 主力吸筹/派发的资金异动信号
-        mom_ma = momentum_5.rolling(N, min_periods=N).mean()
-        mom_std = momentum_5.rolling(N, min_periods=N).std().replace(0, np.nan)
-        mom_z = (momentum_5 - mom_ma) / mom_std
-        feats["amt_abn_volume"] = (amt_z - mom_z.abs()).clip(-5, 5).fillna(0.0)
-
-        # 3) 带符号资金流：资金强度 z-score × 收益方向（放量上涨为正、放量下跌为负）
-        #    用 z-score 而非 pct_change，避免极端放量日的比率爆炸，且天然无量纲
-        ret_sign = np.sign(momentum_5.fillna(0.0))
-        feats["amt_chg_x_ret"] = (amt_z.clip(-5, 5) * ret_sign).fillna(0.0)
 
     # ── 大盘/环境（需 market_df；缺失则整列 NaN，后续中性填 0）──
     mkt_close = _align_market_close(data["date"], market_df)
@@ -622,8 +472,8 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     )
 
     feats = feats.replace([np.inf, -np.inf], np.nan)
-    # 可选特征（换手率）在数据源缺失时整列为 NaN：填 0 中性值，
-    # 避免把无换手率的股票在下面 dropna 时整只清空。
+    # 可选特征（大盘环境）在未传入 market_df 时整列为 NaN：填 0 中性值，
+    # 避免把这些票在下面 dropna 时整只清空。
     for _col in _OPTIONAL_FEATURES:
         if _col in feats.columns:
             feats[_col] = feats[_col].fillna(0.0)
@@ -996,7 +846,6 @@ def _load_daily_df(
     use_cache: bool = True,
     refresh: bool = True,
     resolve_name: bool = True,
-    online_fallback: bool = True,
 ) -> tuple[pd.DataFrame, Optional[str]]:
     """加载日线数据：读透缓存（read-through cache）策略。
 
@@ -1007,10 +856,6 @@ def _load_daily_df(
     4. 联网失败但缓存样本足够 → 降级用缓存；否则抛 PredictionError
 
     这样同一只票的反复预测不再每次联网，也与项目已有的数据缓存打通。
-
-    online_fallback=False 时为「纯本地」模式（全市场快照必用）：缓存不足也绝不联网，
-    直接返回现有缓存交由上层跳过。注意 refresh=False 仅跳过「缓存新鲜度检查」，并不
-    阻止「缓存缺失时的联网兜底」；要真正零联网必须同时 online_fallback=False。
     """
     from data_provider.base import DataFetcherManager, DataFetchError
 
@@ -1025,13 +870,6 @@ def _load_daily_df(
         # 缓存命中是高频正常路径，降为 DEBUG，避免批量打分时刷屏淹没关键日志；
         # 排查时打开 DEBUG 级别仍可逐票查看。
         logger.debug("预测使用本地缓存数据: %s（%d 条，命中缓存免联网）", stock_code, len(cached))
-        name = _safe_stock_name(stock_code) if resolve_name else None
-        return cached, name
-
-    # 纯本地模式：不联网兜底。缓存不足时返回现有缓存（可能为空/不足），
-    # 上层 build_features 会据此跳过该票，从而实现全市场快照零联网。
-    if not online_fallback:
-        logger.debug("[local-only] %s 本地缓存 %d 条（不足则跳过，不联网）", stock_code, len(cached))
         name = _safe_stock_name(stock_code) if resolve_name else None
         return cached, name
 
@@ -1193,22 +1031,13 @@ def score_codes(
     lookback_days: int = 250,
     resolve_name: bool = True,
     refresh: bool = True,
-    online_fallback: bool = True,
-    industry_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """给一批股票打「强弱分」(最新特征喂横截面模型)。
 
     纯打分、不排序不加权(排序/分位/权重由调用方按其票池口径计算)，供
     rank_stocks 与选股推荐服务共用。单票失败自动跳过、不中断整批。
 
-    refresh=False 时跳过缓存新鲜度检查；online_fallback=False 时缓存缺失也不联网
-    (全市场扫描必用，二者配合可彻底避免上千次联网)。
-
-    ── 架构级：横截面特征归一（与训练侧对称）──
-    当 ENABLE_CROSS_SECTION_NORM 开启时，先收集全部票的最新特征行，再按「同日[同行业]」
-    做截面分位归一(cross_sectional_normalize)，最后批量打分。这样预测特征口径与训练
-    完全一致（都是"当日截面分位"），杜绝"训练用截面分位、预测用纵向绝对值"的线上裂缝。
-    行业分组需传 industry_map（与训练侧行业中性口径一致）；未传则退化为全市场截面。
+    refresh=False 时仅用本地缓存(全市场扫描必用，避免上千次联网)。
 
     Returns: [{code, stock_name, strength_score, last_close, as_of_date}, ...]
     """
@@ -1224,8 +1053,7 @@ def score_codes(
             continue
         try:
             df, name = _load_daily_df(
-                code, lookback_days, refresh=refresh,
-                resolve_name=resolve_name, online_fallback=online_fallback,
+                code, lookback_days, refresh=refresh, resolve_name=resolve_name,
             )
             if df is None or df.empty:
                 continue
@@ -1250,18 +1078,9 @@ def score_codes(
 
     X = np.vstack(feat_list)
 
-    # ── 第 2 步：横截面特征归一（与训练侧对称，口径唯一）──
-    if ENABLE_CROSS_SECTION_NORM and len(X):
-        dates = np.asarray([r["as_of_date"] for r in rows])
-        groups = None
-        if industry_map:
-            groups = np.asarray([
-                industry_map.get(r["code"].strip().upper(), "__UNK__") for r in rows
-            ])
-        X = cross_sectional_normalize(X, dates, groups, feature_order=FEATURE_ORDER)
-
-    # ── 第 3 步：批量打分──
-    scores = np.asarray(model.predict_proba(X), dtype=float)
+    # ── 第 2 步：批量打分（兼容 (n,2) 与 (n,) 两种 predict_proba 输出）──
+    _raw = np.asarray(model.predict_proba(X), dtype=float)
+    scores = _raw[:, 1] if (_raw.ndim == 2 and _raw.shape[1] >= 2) else _raw.ravel()
     out: List[Dict[str, Any]] = []
     for i, r in enumerate(rows):
         out.append({
@@ -1272,6 +1091,7 @@ def score_codes(
             "as_of_date": r["as_of_date"],
         })
     return out
+
 
 
 def attach_ranking(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1325,17 +1145,7 @@ def rank_stocks(
         raise PredictionError("待打分的股票列表为空")
 
     model, record = load_ranking_model(model_name)
-    # 横截面特征归一需按行业分组（与训练侧行业中性口径一致）；加载失败则退化为全市场截面
-    _ind_map: Dict[str, str] = {}
-    try:
-        from src.repositories.stock_industry_repo import StockIndustryRepository
-
-        _ind_map = StockIndustryRepository().get_map()
-    except Exception as exc:  # noqa: BLE001 - 行业映射缺失时退化为全市场截面归一
-        logger.debug("rank_stocks 加载行业映射失败，横截面归一退化为全市场：%s", exc)
-    scored = score_codes(
-        codes, model=model, lookback_days=lookback_days, industry_map=_ind_map or None,
-    )
+    scored = score_codes(codes, model=model, lookback_days=lookback_days)
     if not scored:
         raise PredictionError("所有股票均无足够数据完成打分；请检查代码或稍后重试")
 

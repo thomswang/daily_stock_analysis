@@ -43,11 +43,9 @@ import pandas as pd
 from src.services.prediction_service import (
     DEFAULT_LABEL_HORIZON,
     DEFAULT_LABEL_THRESHOLD,
-    ENABLE_CROSS_SECTION_NORM,
     FEATURE_ORDER,
     _align_market_close,
     build_features,
-    cross_sectional_normalize,
     load_market_df,
     make_labels,
     make_labels_relative,
@@ -275,7 +273,6 @@ class ModelTrainingService:
             if not keep.all():
                 X, y = X[keep], y[keep]
                 all_dates = [d for d, k in zip(all_dates, keep) if k]
-                ind_parts = [v for v, k in zip(ind_parts, keep) if k]
             logger.info(
                 "[train] 横截面标签(%s, top %.0f%%)：保留 %d 条，正样本占比 %.1f%%",
                 "行业中性" if neutralized else "全市场",
@@ -283,18 +280,6 @@ class ModelTrainingService:
                 100.0 * float(y.mean()) if len(y) else 0.0,
             )
 
-            # ── 架构级：横截面特征归一（把纵向特征转成「同日同行业截面分位」）──
-            # 用与标签排名**完全相同的分组**(同日[,同行业])，使特征口径 = 标签口径 = 排名口径。
-            # 预测侧 score_codes 对称调用同一函数，口径唯一、无线上裂缝。
-            if ENABLE_CROSS_SECTION_NORM and len(X):
-                groups = np.asarray(ind_parts) if neutralized else None
-                X = cross_sectional_normalize(
-                    X, np.asarray(all_dates), groups, feature_order=FEATURE_ORDER,
-                )
-                logger.info(
-                    "[train] 已启用横截面特征归一（同日%s截面分位），特征口径与排名标签对齐",
-                    "同行业" if neutralized else "",
-                )
             return X, y, used_symbols, all_dates
 
         y = np.concatenate(y_parts)
