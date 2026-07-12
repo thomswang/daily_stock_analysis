@@ -761,7 +761,9 @@ class PredictionModel(Base):
     # 训练范围与样本
     trained_symbols_json = Column(Text)  # 参与训练的股票代码列表（JSON）
     symbol_count = Column(Integer, default=0)
-    train_start_date = Column(Date)
+    train_start_date = Column(Date)  # 第一个有标签样本日
+    # 最后一个有标签样本日，非数据边界/数据最后一天。
+    # 因周度标签(下周一买→周五卖)需未来一周行情才能计算收益，故比库内最新行情早约一周。
     train_end_date = Column(Date)
     horizon_days = Column(Integer, default=1)  # 标签口径：预测未来第几日方向
 

@@ -405,6 +405,13 @@ class ModelTrainingService:
         version = started.strftime("%Y%m%d_%H%M%S")
         # 统一归一到 date 再比较：样本可能同时来自缓存(datetime.date)与
         # 联网(pandas.Timestamp)，直接 min/max 会因类型混用报 TypeError。
+        # 注意 all_dates 来自「有标签样本」的日期(usable["date"])，而 usable 已在
+        # _collect_samples 中剔除末 horizon 行、且去掉 label 为 NaN 的行。换言之
+        # all_dates 只含「信号日之后能凑齐下周一买→周五卖行情」的样本日。
+        # 因此 end_date = max(all_dates) 是「最后一个有标签样本日」，NOT 数据库最新行情日。
+        # 例：库内行情到 7.10，但 7.6~7.10 这几天的「下周收益标签」需 7.13~7.17 行情
+        #   (尚不存在) 才能计算，故无标签不计入 → end_date 停在 7.3，比数据边界早约一周。
+        # 这是「预测未来一周」任务的固有特性，非数据缺失、非取数 bug。
         _norm_dates = [d for d in (_as_date(x) for x in all_dates) if d is not None]
         start_date = min(_norm_dates) if _norm_dates else None
         end_date = max(_norm_dates) if _norm_dates else None
@@ -422,6 +429,7 @@ class ModelTrainingService:
             feature_names=list(FEATURE_ORDER),
             trained_symbols=used_symbols,
             train_start_date=_as_date(start_date),
+            # train_end_date 存的是「最后一个有标签样本日」，非数据边界/数据最后一天。
             train_end_date=_as_date(end_date),
             horizon_days=horizon,
             metrics=metrics,

@@ -42,6 +42,8 @@ class PredictionModelRepository:
         feature_names: List[str],
         trained_symbols: List[str],
         train_start_date: Optional[date],
+        # train_end_date = 「最后一个有标签样本日」，非数据边界/数据最后一天。
+        # 因周度标签需未来一周行情才能计算收益，故它天然比库内最新行情早约一个持有周。
         train_end_date: Optional[date],
         horizon_days: int,
         metrics: Dict[str, Any],
@@ -68,6 +70,8 @@ class PredictionModelRepository:
                 trained_symbols_json=json.dumps(trained_symbols, ensure_ascii=False),
                 symbol_count=len(trained_symbols),
                 train_start_date=train_start_date,
+                # 写入的是「最后一个有标签样本日」；若需展示「数据实际覆盖到哪天」，
+                # 应另取库内行情最大日，与本字段区分（二者差约一周）。
                 train_end_date=train_end_date,
                 horizon_days=horizon_days,
                 feature_names_json=json.dumps(feature_names, ensure_ascii=False),
