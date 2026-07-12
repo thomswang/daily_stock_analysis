@@ -76,6 +76,10 @@ FEATURE_LABELS: Dict[str, Dict[str, str]] = {
     "mkt_volatility_20": {"zh": "大盘20日波动率", "en": "Index 20-day volatility"},
     "rel_strength_5": {"zh": "相对大盘强弱(5日)", "en": "Rel. strength vs index (5d)"},
     "rel_strength_20": {"zh": "相对大盘强弱(20日)", "en": "Rel. strength vs index (20d)"},
+    # ── 资金面（成交额派生，捕捉主力资金流/流动性）──
+    "amt_ma20_dev": {"zh": "成交额20日偏离", "en": "Amount MA20 deviation"},
+    "amt_mom_5": {"zh": "成交额5日动量", "en": "Amount 5d momentum"},
+    "vwap_dev": {"zh": "成交均价相对收盘偏离", "en": "VWAP vs close deviation"},
 }
 FEATURE_ORDER = list(FEATURE_LABELS.keys())
 
@@ -468,6 +472,19 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     turn_ma20 = turnover.rolling(20, min_periods=5).mean()
     feats["turnover_norm"] = turnover / 100.0                              # 绝对换手率(小数)
     feats["turnover_rel"] = (turnover / turn_ma20.replace(0, np.nan)) - 1.0  # 相对20日均值的活跃度
+
+    # ── 资金面（成交额 amount：主力资金流/流动性代理，全部仅用历史数据，防未来函数）──
+    amount_s = (
+        pd.to_numeric(data["amount"], errors="coerce")
+        if "amount" in data.columns
+        else pd.Series(np.nan, index=data.index)
+    )
+    amt_ma20 = amount_s.rolling(20, min_periods=20).mean()
+    feats["amt_ma20_dev"] = (amount_s - amt_ma20) / amt_ma20.replace(0, np.nan)  # 放量/缩量趋势
+    feats["amt_mom_5"] = amount_s.pct_change(periods=5, fill_method=None)        # 资金动量
+    avg_price = amount_s / volume.replace(0, np.nan)        # 成交均价 ≈ VWAP
+    feats["vwap_dev"] = (avg_price / close) - 1.0           # 均价>收盘=盘中买盘强（资金博弈方向）
+    feats["vwap_dev"] = feats["vwap_dev"].fillna(0.0)       # 停牌/无成交日中性填 0
 
     # ── 大盘/环境（需 market_df；缺失则整列 NaN，后续中性填 0）──
     mkt_close = _align_market_close(data["date"], market_df)

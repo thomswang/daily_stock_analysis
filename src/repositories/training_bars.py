@@ -23,7 +23,7 @@ from src.repositories.stock_repo import DEFAULT_TRAIN_BULK_BATCH, StockRepositor
 
 logger = logging.getLogger(__name__)
 
-TRAIN_OHLCV_COLS = ["date", "open", "high", "low", "close", "volume", "turnover_rate"]
+TRAIN_OHLCV_COLS = ["date", "open", "high", "low", "close", "volume", "amount", "turnover_rate"]
 
 
 def load_training_bars_bulk(
