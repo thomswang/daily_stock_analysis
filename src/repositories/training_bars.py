@@ -8,8 +8,8 @@
 
 数据质量（训练必读）：
   stock_daily_ohlcv 的 turnoverratio（换手率）在此网关重命名为 turnover_rate。
-  注：成交量/换手率/资金面(amount)特征已从 build_features 移除，模型仅用价格类 +
-  大盘环境特征；这些列虽仍随行情一并加载，但特征工程阶段不再使用。
+  注：成交量/换手率特征已在 build_features 中恢复（与 model 15 训练口径一致，共 29 维）；
+  资金面(amount)特征仍移除未用。这些列随行情一并加载供特征工程使用。
 """
 
 from __future__ import annotations

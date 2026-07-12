@@ -61,6 +61,13 @@ FEATURE_LABELS: Dict[str, Dict[str, str]] = {
     "body_ratio": {"zh": "K线实体占比", "en": "Candle body ratio"},
     "close_position": {"zh": "收盘位置(当日区间)", "en": "Close position in range"},
     "gap_open": {"zh": "跳空幅度", "en": "Opening gap"},
+    # ── 量价 ──
+    "volume_ratio": {"zh": "成交量比率", "en": "Volume ratio"},
+    "volume_trend": {"zh": "量能趋势(5/20)", "en": "Volume trend (5/20)"},
+    "pv_corr_10": {"zh": "10日量价相关性", "en": "10-day price-volume corr"},
+    # ── 换手率（数据源直供，非 OHLCV 可派生，含流通盘信息）──
+    "turnover_norm": {"zh": "换手率(绝对)", "en": "Turnover rate"},
+    "turnover_rel": {"zh": "换手率相对20日均值", "en": "Turnover vs 20d avg"},
     # ── 大盘/环境（需传入指数日线 market_df；缺失时中性填 0）──
     # A 股个股短期方向很大程度由大盘 β 驱动，补上环境维度是提准确率的最大杠杆。
     "mkt_ma20_dev": {"zh": "大盘20日均线偏离", "en": "Index MA20 deviation"},
@@ -74,18 +81,18 @@ FEATURE_LABELS: Dict[str, Dict[str, str]] = {
 # 特征口径：纵向（每只票与自身历史比），直接喂横截面排序标签模型。
 # 重构前(9f0008b)即此口径；特征横截面归一(ENABLE_CROSS_SECTION_NORM)为 ea9b0d0 引入，
 # 本次恢复时移除——特征保持纵向，标签仍为同日同行业横截面排名。
-# 成交量/换手率/资金面(amount)特征已全部移除：模型仅用价格类 + 大盘环境特征。
+# 与 model 15 训练口径一致：29 维（价格类 18 + 成交量/换手 5 + 大盘环境 6），不含资金面(amount)。
 
 FEATURE_ORDER = list(FEATURE_LABELS.keys())
 
 # 数据源/入参可能不提供的扩展特征：整列缺失时以 0(中性)填充，
 # 避免这些列的 NaN 把整只股票的样本在 dropna 时清空
-# （兼容未传入 market_df 的调用方）。
+# （兼容无换手率的兜底源，以及未传入 market_df 的调用方）。
 _MARKET_FEATURES = (
     "mkt_ma20_dev", "mkt_momentum_20", "mkt_rsi_14", "mkt_volatility_20",
     "rel_strength_5", "rel_strength_20",
 )
-_OPTIONAL_FEATURES = _MARKET_FEATURES
+_OPTIONAL_FEATURES = ("turnover_norm", "turnover_rel") + _MARKET_FEATURES
 
 
 # 标签口径（默认）：预测"未来 N 日"方向，而非噪声很大的"次日"。
@@ -378,11 +385,11 @@ def _align_market_close(dates: pd.Series, market_df: Optional[pd.DataFrame]) -> 
 def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     """由日线 DataFrame 构造技术因子矩阵。
 
-    df 需包含列：date, open, high, low, close
+    df 需包含列：date, open, high, low, close, volume（可选 turnover_rate）
     market_df：可选的大盘指数日线（需含 date, close）。传入则派生"大盘环境/相对
         强弱"特征；不传则这些列整列缺失、按 _OPTIONAL_FEATURES 中性填 0（行为向后兼容）。
     返回：包含 FEATURE_ORDER 各列 + close + date 的 DataFrame（已 dropna）
-    注：成交量/换手率/资金面(amount)特征已移除，本函数仅产出价格类 + 大盘环境特征。
+    特征口径与 model 15 训练时一致：价格类 18 + 成交量/换手 5 + 大盘环境 6 = 29 维。
 
     所有因子仅用当日及更早数据（rolling/shift 回看），保证防未来函数；
     并做无量纲归一化（比例/相对价格/0~1 区间），避免量纲干扰梯度下降。
@@ -397,6 +404,13 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     open_ = data["open"].astype(float) if "open" in data else close
     high = data["high"].astype(float) if "high" in data else close
     low = data["low"].astype(float) if "low" in data else close
+    volume = data["volume"].astype(float) if "volume" in data else pd.Series(np.nan, index=data.index)
+    # 换手率（数据源直供，%）；缺列则整列 NaN，后续以 0 中性填充
+    turnover = (
+        pd.to_numeric(data["turnover_rate"], errors="coerce")
+        if "turnover_rate" in data.columns
+        else pd.Series(np.nan, index=data.index)
+    )
 
     # fill_method=None：pandas 2.x 默认前向填充缺失值，会在停牌日"借用"前一日的收益，
     # 导致特征产生虚假信号。显式禁用前填，保证停牌日 ret 为 NaN（后续 dropna 剔除）。
@@ -407,6 +421,8 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     ma10 = close.rolling(10, min_periods=10).mean()
     ma20 = close.rolling(20, min_periods=20).mean()
     std20 = close.rolling(20, min_periods=20).std()
+    vol_ma5 = volume.rolling(5, min_periods=5).mean()
+    vol_ma20 = volume.rolling(20, min_periods=20).mean()
 
     # 当日区间/实体（防止除零：用 NaN 兜底，最后 dropna）
     hl = (high - low).replace(0, np.nan)
@@ -452,6 +468,14 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     feats["body_ratio"] = (close - open_) / hl
     feats["close_position"] = (close - low) / hl
     feats["gap_open"] = (open_ - prev_close) / prev_close
+    # ── 量价 ──
+    feats["volume_ratio"] = (volume / vol_ma5) - 1.0
+    feats["volume_trend"] = (vol_ma5 / vol_ma20) - 1.0
+    feats["pv_corr_10"] = ret.rolling(10, min_periods=10).corr(volume.pct_change(fill_method=None))
+    # ── 换手率 ──
+    turn_ma20 = turnover.rolling(20, min_periods=5).mean()
+    feats["turnover_norm"] = turnover / 100.0                              # 绝对换手率(小数)
+    feats["turnover_rel"] = (turnover / turn_ma20.replace(0, np.nan)) - 1.0  # 相对20日均值的活跃度
 
     # ── 大盘/环境（需 market_df；缺失则整列 NaN，后续中性填 0）──
     mkt_close = _align_market_close(data["date"], market_df)
@@ -472,7 +496,7 @@ def build_features(df: pd.DataFrame, market_df: Optional[pd.DataFrame] = None) -
     )
 
     feats = feats.replace([np.inf, -np.inf], np.nan)
-    # 可选特征（大盘环境）在未传入 market_df 时整列为 NaN：填 0 中性值，
+    # 可选特征（换手率/大盘环境）在数据源缺失时整列为 NaN：填 0 中性值，
     # 避免把这些票在下面 dropna 时整只清空。
     for _col in _OPTIONAL_FEATURES:
         if _col in feats.columns:
