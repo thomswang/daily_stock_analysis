@@ -62,6 +62,9 @@ class TradeWindow:
     is_buy_reached: bool
     is_settled: bool
     as_of_date: Optional[str]
+    # 预测目标周（buy_date~sell_date 的可读区间），供前端显式展示「预测的是哪一周」，
+    # 与 as_of_date（特征参考日）区分开，消除「晚一周」的误读。
+    predict_week: str
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -71,23 +74,35 @@ def resolve_trade_window(
     ref_date: Optional[date] = None,
     today: Optional[date] = None,
 ) -> TradeWindow:
-    """根据「预测快照日」推算预测周的买卖窗口，并用真实今天判定状态。
+    """根据「预测快照日（特征参考日）」推算预测目标周的买卖窗口，并用真实今天判定状态。
 
     参数：
-        ref_date: 预测快照日（决定预测周，即买入/卖出落在哪一周）。
+        ref_date: 预测快照日 = 特征参考日（as_of_date，即模型看到的最后一天行情）。
         today:    真实今天（决定 live / settled / pending 状态）。
-    逻辑：
-        - 预测买入日 = ref_date 所在周的周一（与训练标签周一开买一致）。
-        - 预测卖出日 = 该周周五。
+
+    ── 关键口径：与训练标签「信号日之后第一个周一开盘买」严格对齐 ──
+    模型训练时(make_weekly_open_close_return)的标签是：
+      「信号日 i 之后**第一个周一**开盘买入 → 该周周五收盘卖出」。
+    因此预测买入日必须取 ref_date **之后**的第一个周一，而不是 ref_date 所在周的周一：
+      - 若 ref_date 是周五(如 7.10)，其信号指向的是**下周一(7.13)买、下周五(7.17)卖**，
+        目标周 = 7.13~7.17（下一周），这才是「预测下周走势」。
+      - 曾经的实现取「ref_date 所在周的周一」(7.6)，会把目标周算成 as_of 当周(7.6~7.10)，
+        即模型学习截止周，比真实预测目标整整早一周——这正是用户感知到的「晚一周」根因。
+
+    状态判定：
         - today < 买入日      → pending（待买入，无收益）。
         - 买入日 ≤ today ≤ 卖出日 → holding/buy_today（实时，部分收益）。
         - today >  卖出日      → settled（预测周已收盘，收益为当周实际值）。
     """
     today = today or date.today()
     ref_date = ref_date or today
-    ref_weekday = ref_date.weekday()  # 周一=0
-    buy_date = ref_date - timedelta(days=ref_weekday)  # 预测周周一
-    sell_date = buy_date + timedelta(days=4)  # 预测周周五
+    # 预测买入日 = ref_date «之后» 第一个周一（与训练标签「信号日后第一个周一开买」对齐）。
+    # weekday(): 周一=0 … 周日=6；到下一个周一的天数 = (7 - weekday) % 7，
+    # 但需严格「之后」，故 ref 本身是周一时也顺延到下一周一（7 天后），
+    # 保证任一 ref_date 的目标周都是其后的完整交易周。
+    days_to_next_monday = 7 - ref_date.weekday()  # 周五=4 → 3 天到 7.13；周一=0 → 7 天到下周一
+    buy_date = ref_date + timedelta(days=days_to_next_monday)  # 预测目标周·周一
+    sell_date = buy_date + timedelta(days=4)  # 预测目标周·周五
     next_buy_date = buy_date + timedelta(days=7)
 
     if today < buy_date:
@@ -121,6 +136,7 @@ def resolve_trade_window(
         is_buy_reached=is_buy_reached,
         is_settled=is_settled,
         as_of_date=ref_date.isoformat(),
+        predict_week=f"{buy_date.isoformat()} ~ {sell_date.isoformat()}",
     )
 
 

@@ -210,7 +210,10 @@ export interface WeeklyTradeWindow {
   daysToSell: number;
   isBuyReached: boolean;
   isSettled: boolean;
+  /** 特征参考日（模型看到的最后一天行情），非预测目标周。 */
   asOfDate: string | null;
+  /** 预测目标周区间（买入周一~卖出周五），显式标明"预测的是哪一周"，与 asOfDate 区分。 */
+  predictWeek: string;
 }
 
 export interface WeeklyLiveSummary {

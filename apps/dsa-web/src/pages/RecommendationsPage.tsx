@@ -41,7 +41,8 @@ const TEXT = {
     loading: '读取中…',
     emptyTitle: '暂无榜单',
     emptyDesc: '后台尚未生成当日强弱榜。请先运行 python rank_snapshot.py 生成快照。',
-    asOf: '数据截至',
+    asOf: '特征参考日',
+    predictWeekShort: '预测目标周',
     universe: '打分股票',
     picked: '入选',
     industriesCovered: '覆盖行业',
@@ -80,6 +81,10 @@ const TEXT = {
     windowHintSettled: '预测周已收盘，以下为当周实际收益（非实时回测）',
     windowPredictedBuy: '预测买入时间',
     windowAsOf: '数据快照',
+    // 预测目标周 vs 特征参考日的显式区分，消除"晚一周"误读
+    predictWeekLabel: '预测目标周',
+    asOfLabel: '特征参考日',
+    weekExplain: '模型用「特征参考日」当天及之前的行情打分，预测的是其后第一个完整交易周（下周一开盘买、当周周五收盘卖）。因此「预测目标周」永远晚于「特征参考日」一周，属正常设计，非数据滞后。',
     liveTitleSettled: '当周收益概览（已结算）',
     // Live summary
     liveTitle: '实时收益概览（腾讯行情）',
@@ -110,7 +115,8 @@ const TEXT = {
     loading: 'Loading…',
     emptyTitle: 'No board yet',
     emptyDesc: 'Today\'s strength board has not been generated. Run python rank_snapshot.py first.',
-    asOf: 'As of',
+    asOf: 'Feature date',
+    predictWeekShort: 'Target week',
     universe: 'Scored',
     picked: 'Picked',
     industriesCovered: 'Industries',
@@ -148,6 +154,9 @@ const TEXT = {
     windowHintSettled: 'Prediction week closed — actual returns for that week (not live)',
     windowPredictedBuy: 'Predicted buy time',
     windowAsOf: 'Snapshot',
+    predictWeekLabel: 'Target week',
+    asOfLabel: 'Feature date',
+    weekExplain: 'The model scores using quotes up to the "feature date", then predicts the first full trading week after it (buy Mon open, sell Fri close). So the "target week" is always one week later than the "feature date" — by design, not a data lag.',
     liveTitleSettled: 'Week returns overview (settled)',
     liveTitle: 'Live returns overview (Tencent)',
     liveAvg1: 'Avg 1D',
@@ -287,19 +296,29 @@ const TradeWindowBanner: React.FC<{ window: WeeklyTradeWindow; text: Lang }> = (
         <span className="ml-auto text-[11px] text-secondary-text">{hint}</span>
       </div>
 
-      {/* 醒目：预测买入时间（锚定到预测周，而非请求当天） */}
-      <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/40 bg-elevated/40 px-3 py-2">
-        <span className="rounded-md bg-cyan/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-cyan">
-          {text.windowPredictedBuy}
-        </span>
-        <span className="font-mono text-sm font-semibold" style={{ color: statusColor }}>
-          {window.buyDate} 开盘 → {window.sellDate} 收盘
-        </span>
-        {window.asOfDate ? (
-          <span className="ml-auto text-[11px] text-secondary-text">
-            {text.windowAsOf}：{window.asOfDate}
+      {/* 醒目：预测目标周（锚定到「特征日之后的第一个完整交易周」，而非特征日当周） */}
+      <div className="flex flex-col gap-1.5 rounded-xl border border-border/40 bg-elevated/40 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="rounded-md bg-cyan/15 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-cyan">
+            {text.predictWeekLabel}
           </span>
-        ) : null}
+          <span className="font-mono text-sm font-semibold" style={{ color: statusColor }}>
+            {window.predictWeek || `${window.buyDate} ~ ${window.sellDate}`}
+          </span>
+          <span className="text-[11px] text-secondary-text">
+            （{window.buyDate} 开盘买 → {window.sellDate} 收盘卖）
+          </span>
+          {window.asOfDate ? (
+            <span className="ml-auto inline-flex items-center gap-1 rounded-md border border-border/50 px-2 py-0.5 text-[11px] text-secondary-text">
+              {text.asOfLabel}：<span className="font-mono text-foreground">{window.asOfDate}</span>
+            </span>
+          ) : null}
+        </div>
+        {/* 解释：为何「预测目标周」晚于「特征参考日」一周——消除"晚一周"误读 */}
+        <p className="flex items-start gap-1 text-[11px] leading-relaxed text-secondary-text/80">
+          <Info className="mt-0.5 h-3 w-3 flex-shrink-0 text-cyan/70" />
+          <span>{text.weekExplain}</span>
+        </p>
       </div>
 
       <div className="grid grid-cols-3 gap-2 sm:gap-4">
@@ -613,6 +632,12 @@ const RecommendationsPage: React.FC = () => {
             <span>{text.model}：M{data.modelId} · {data.modelName}@{data.modelVersion}</span>
             <span>{text.generatedAt}：{data.generatedAt ?? '--'}</span>
             <span>{text.asOf}：{data.asOfDate ?? '--'}</span>
+            {data.tradeWindow?.predictWeek ? (
+              <span className="inline-flex items-center gap-1">
+                {text.predictWeekShort}：
+                <span className="font-medium text-cyan">{data.tradeWindow.predictWeek}</span>
+              </span>
+            ) : null}
           </div>
 
           {/* Trade window banner */}

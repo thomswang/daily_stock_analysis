@@ -244,7 +244,11 @@ class WeeklyTradeWindow(BaseModel):
     days_to_sell: int = Field(..., description="距预测卖出日天数(已结算为负)")
     is_buy_reached: bool = Field(..., description="预测买入日是否已到(决定能否取收益)")
     is_settled: bool = Field(..., description="预测周是否已收盘(收益为当周实际值，非实时)")
-    as_of_date: Optional[str] = Field(None, description="预测快照日期(决定预测周，非实时拉取日)")
+    as_of_date: Optional[str] = Field(None, description="特征参考日(模型看到的最后一天行情)，非预测目标周")
+    predict_week: str = Field(
+        ...,
+        description="预测目标周区间(买入周一~卖出周五)，与 as_of_date(特征日)区分，显式标明'预测的是哪一周'",
+    )
 
 
 class WeeklyLiveSummary(BaseModel):
