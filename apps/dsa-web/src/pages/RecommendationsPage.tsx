@@ -1,6 +1,6 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CalendarClock, Info, ListChecks, RefreshCw, Sparkles, TrendingUp, Trophy } from 'lucide-react';
+import { CalendarClock, ExternalLink, Info, ListChecks, RefreshCw, Sparkles, TrendingUp, Trophy } from 'lucide-react';
 import { predictionApi } from '../api/prediction';
 import { getParsedApiError, type ParsedApiError } from '../api/error';
 import {
@@ -233,6 +233,33 @@ const RankMedal: React.FC<{ rank: number }> = ({ rank }) => {
   return <span className="font-mono text-xs text-secondary-text">{rank}</span>;
 };
 
+/**
+ * 根据 A 股代码生成东方财富个股详情页 URL。
+ *
+ * 兼容多种后端可能返回的代码格式：
+ *   603458 / 603458.SH / SH603458 → 都归一化为 6 位数字 603458
+ *
+ * 市场判断：
+ *   6xxxxx → sh（沪市主板+科创板）
+ *   0/3xxxxx → sz（深市主板+创业板）
+ *   8/4xxxxx → bj（北交所）
+ */
+function eastmoneyUrl(code: string): string {
+  const normalized = code.trim().toUpperCase();
+  // 先去掉后缀 .SH/.SZ/.BJ，再去掉前缀 SH/SZ/BJ，最后截取后6位并补零
+  let pure = normalized
+    .replace(/\.(SH|SZ|BJ)$/, '')   // 603458.SH → 603458
+    .replace(/^(SH|SZ|BJ)/, '');    // SH603458  → 603458
+  pure = pure.slice(-6).padStart(6, '0');  // 保证 6 位
+  // 判断市场
+  const market = pure.startsWith('6')
+    ? 'sh'
+    : (pure.startsWith('8') || pure.startsWith('4'))
+      ? 'bj'
+      : 'sz';
+  return `https://quote.eastmoney.com/${market}${pure}.html`;
+}
+
 const ReturnCell: React.FC<{ value: number | null | undefined; pending?: boolean }> = ({ value, pending }) => {
   if (pending) {
     return <span className="text-[11px] font-medium text-amber-400/90">待买入</span>;
@@ -394,13 +421,21 @@ const CombinedTable: React.FC<{
             const pending = !window.isBuyReached;
             const lastPrice = lv?.lastPrice != null ? lv.lastPrice : it.lastClose;
             return (
-              <tr key={it.code} className="border-b border-border/20 transition-colors hover:bg-elevated/30">
+              <tr
+                key={it.code}
+                className="group cursor-pointer border-b border-border/20 transition-colors hover:bg-cyan/8"
+                onClick={() => globalThis.open(eastmoneyUrl(it.code), '_blank', 'noopener,noreferrer')}
+                title={`在东方财富查看 ${it.stockName || it.code}`}
+              >
                 <td className="px-2 py-2.5 text-center align-middle">
                   <RankMedal rank={it.rank} />
                 </td>
                 <td className="px-2 py-2.5 text-center align-middle">
                   <div className="flex flex-col items-center">
-                    <span className="font-medium text-foreground">{it.stockName || it.code}</span>
+                    <span className="inline-flex items-center gap-1 font-medium text-foreground group-hover:text-cyan">
+                      {it.stockName || it.code}
+                      <ExternalLink className="h-3 w-3 text-secondary-text/50 group-hover:text-cyan" />
+                    </span>
                     <span className="font-mono text-[11px] text-secondary-text">{it.code}</span>
                   </div>
                 </td>
