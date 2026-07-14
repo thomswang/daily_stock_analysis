@@ -282,7 +282,7 @@ class WeeklyRecommendationResponse(BaseModel):
     industry_cap: Optional[int] = Field(None, description="行业分散上限(生成时固定为前 20)")
     strategy: Optional[StrategyHint] = Field(None, description="推荐的交易口径(回测最优)")
     items: List[RecommendationItem] = Field(default_factory=list, description="推荐榜单(强弱分等)")
-    trade_window: WeeklyTradeWindow = Field(..., description="买卖时间窗口(周一买/周五卖)")
+    trade_window: WeeklyTradeWindow = Field(..., description="买卖时间窗口(周一买/周五卖)：同时作为实时收益跟踪的目标周，严格锚定到预测快照对应的那一周")
     live: List[WeeklyLiveItem] = Field(default_factory=list, description="与 items 同序的实时收益明细")
     live_summary: WeeklyLiveSummary = Field(..., description="实时收益汇总")
     data_source: Optional[str] = Field(None, description="实时行情数据源")

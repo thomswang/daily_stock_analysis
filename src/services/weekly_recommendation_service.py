@@ -230,11 +230,18 @@ def build_weekly_recommendations(
         except (TypeError, ValueError):
             pass
 
+    # 预测目标周 == 实时跟踪周：二者必须严格一致，否则会把「上周的预测」错算成「本周收益」。
+    # 窗口由快照 as_of_date 推算（见 resolve_trade_window）：
+    #   - 预测是上周五生成的 → 目标周=本周 → 拉本周数据，周二算 1 日、周四算 3 日。
+    #   - 预测是两周前生成的 → 目标周=上周 → 拉上周数据，已结算。
+    #   - 预测生成于本周内(目标=下周一) → 下周未开始 → pending，不展示收益。
+    # 因此「实时收益」永远锚定在预测对应的那一周，腾讯只拉那一周的数据，绝不跑到无关周。
     window = resolve_trade_window(ref_date=ref_date, today=today)
-    buy_date = datetime.strptime(window.buy_date, "%Y-%m-%d").date()
-    sell_date = datetime.strptime(window.sell_date, "%Y-%m-%d").date()
-    # 行情只拉到「预测周周五」截止，绝不泄漏到预测周之后（如本周）。
-    end_date = min(today or date.today(), sell_date)
+    live_buy = datetime.strptime(window.buy_date, "%Y-%m-%d").date()
+    live_sell = datetime.strptime(window.sell_date, "%Y-%m-%d").date()
+    # 行情只拉到「今天」截止（腾讯延迟一天没关系，缺失当天则顺延到下一交易日）。
+    # 多取 1 天作为容错，确保收盘后当日数据能被纳入；绝不越过目标周周五。
+    end_date = min(today or date.today(), live_sell) + timedelta(days=1)
 
     live_items: List[Dict[str, Any]] = []
     r1: List[float] = []
@@ -254,10 +261,12 @@ def build_weekly_recommendations(
             "return_wk_pct": None,
             "note": None,
         }
+        # 用 TencentFetcher 拉 [live_buy, end_date] 的日线：单次请求即覆盖整周
+        # （腾讯 fqkline 支持多天查询，一次请求足够），无需按天或按快照逐票遍历。
         if window.is_buy_reached and code:
-            df = _fetch_tencent_kline(code, buy_date, end_date)
+            df = _fetch_tencent_kline(code, live_buy, end_date)
             if df is not None and not df.empty:
-                lr = _compute_live_return(df, buy_date)
+                lr = _compute_live_return(df, live_buy)
                 live.update(lr)
                 if lr.get("return_1d_pct") is not None:
                     r1.append(lr["return_1d_pct"])
