@@ -126,7 +126,10 @@ def _estimate_lookback_days(*, start_date: str, end_date: str) -> int:
     except ValueError:
         calendar_days = 90
     # Trading days are sparse over calendar days; add margin for holidays/suspensions.
-    return max(30, min(_MAX_KLINE_BARS, int(calendar_days * 1.8) + 20))
+    # 下限取 60（而非 30）：腾讯 fqkline 在「窄窗口 + 小 count」时会对部分股票
+    # 丢弃窗口最后一根 K 线（实测 count=30 时 603458 的 T+1 日行情被吞，count>=40 正常）。
+    # 抬高下限可稳定拿回整周行情；返回的冗余 bar 会在调用方按 [start,end] 二次过滤。
+    return max(60, min(_MAX_KLINE_BARS, int(calendar_days * 1.8) + 20))
 
 
 def _empty_daily_frame() -> pd.DataFrame:

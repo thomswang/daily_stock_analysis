@@ -161,9 +161,15 @@ def _fetch_tencent_kline(code: str, start: date, end: date) -> Optional[pd.DataF
 
 
 def _compute_live_return(df: pd.DataFrame, buy_date: date) -> Dict[str, Any]:
-    """以买入日（周一）开盘价为成本，计算 1/3/5 日实时收益。
+    """以买入日（周一）开盘价为成本，基于「实际返回的交易日」动态计算 1/3/5 日收益。
 
-    收益是否可算取决于实际返回的交易日行（自动兼容停牌/节假日顺延）。
+    不再用行号硬编码 (buy_idx+1/+3/+4)，改为扫描买入后每一根 K 线，
+    按「自然日差距」自动归入对应期限：
+      - 与 buy_date 差 1~2 天 → return_1d_pct（取第一个满足的，即最早的那根）
+      - 与 buy_date 差 3~4 天 → return_3d_pct
+      - 与 buy_date 差 5~7 天 → return_wk_pct（覆盖周一买~周五卖及节假日顺延）
+
+    这样无论腾讯返回几天、中间是否停牌，都能正确计算出已有期限的收益。
     """
     rows = df[df["date"] >= buy_date]
     if rows.empty:
@@ -180,27 +186,47 @@ def _compute_live_return(df: pd.DataFrame, buy_date: date) -> Dict[str, Any]:
     buy_idx = int(rows.index[0])
     real_buy_date = df.loc[buy_idx, "date"]
     open_price = float(df.loc[buy_idx, "open"])
-    last_row = df.loc[df.index[-1]]
+    last_row = df.iloc[-1]
     last_price = float(last_row.get("close", last_row.get("last")))
 
-    def _ret(n: int) -> Optional[float]:
-        ti = buy_idx + n
-        if ti >= len(df):
-            return None
-        close_price = float(df.loc[ti].get("close", df.loc[ti].get("last")))
-        if open_price <= 0:
-            return None
-        return round((close_price / open_price - 1.0) * 100.0, 2)
-
-    return {
+    result: Dict[str, Any] = {
         "available": True,
         "buy_date": real_buy_date.isoformat(),
         "buy_price": round(open_price, 2),
         "last_price": round(last_price, 2),
-        "return_1d_pct": _ret(1),
-        "return_3d_pct": _ret(3),
-        "return_wk_pct": _ret(4),
+        "return_1d_pct": None,
+        "return_3d_pct": None,
+        "return_wk_pct": None,
     }
+
+    # 扫描买入后的每一个交易日，按自然日差距填入对应期限（每期限只取最早的）。
+    # 期限定义按「至少持有N个自然日」的口径：
+    #   1日  = 距买入 >=1 天 且 <=2 天（覆盖 T+1~T+2，即周二、周三）
+    #   3日  = 距买入 >=3 天 且 <=5 天（覆盖 T+3~T+5，即周四~次周一）
+    #   当周 = 距买入 >=4 天 且 <=8 天（覆盖 T+4~T+8，即周五~次周二，含节假日顺延）
+    for i in range(buy_idx + 1, len(df)):
+        row_date = df.iloc[i]["date"]
+        if isinstance(row_date, date):
+            days_gap = (row_date - real_buy_date).days
+        else:
+            days_gap = (pd.to_datetime(row_date).date() - real_buy_date).days
+        close_price = float(df.iloc[i].get("close", df.iloc[i].get("last")))
+        if open_price <= 0:
+            continue
+        ret = round((close_price / open_price - 1.0) * 100.0, 2)
+
+        if 1 <= days_gap <= 2 and result["return_1d_pct"] is None:
+            result["return_1d_pct"] = ret
+        if 3 <= days_gap <= 5 and result["return_3d_pct"] is None:
+            result["return_3d_pct"] = ret
+        if 4 <= days_gap <= 8 and result["return_wk_pct"] is None:
+            result["return_wk_pct"] = ret
+
+        # 所有期限都已出数时可提前退出
+        if all(v is not None for k, v in result.items() if k.startswith("return_")):
+            break
+
+    return result
 
 
 def build_weekly_recommendations(
@@ -239,9 +265,10 @@ def build_weekly_recommendations(
     window = resolve_trade_window(ref_date=ref_date, today=today)
     live_buy = datetime.strptime(window.buy_date, "%Y-%m-%d").date()
     live_sell = datetime.strptime(window.sell_date, "%Y-%m-%d").date()
-    # 行情只拉到「今天」截止（腾讯延迟一天没关系，缺失当天则顺延到下一交易日）。
-    # 多取 1 天作为容错，确保收盘后当日数据能被纳入；绝不越过目标周周五。
-    end_date = min(today or date.today(), live_sell) + timedelta(days=1)
+    # 直接请求整周 [周一, 周五]，不按 today 截断。
+    # 腾讯返回了哪些天的 K 线就用哪些天；_compute_live_return 会按实际日期差
+    # 动态计算 1/3/当周收益，没数据的期限留 None——不会算错到其它周。
+    end_date = live_sell + timedelta(days=1)  # 多 1 天容错（覆盖周五收盘后）
 
     live_items: List[Dict[str, Any]] = []
     r1: List[float] = []
