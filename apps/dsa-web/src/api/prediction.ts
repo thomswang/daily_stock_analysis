@@ -9,7 +9,6 @@ import type {
   RecommendationsResponse,
   RecommendationBacktestParams,
   RecommendationBacktestResponse,
-  SnapshotRun,
   WeeklyRecommendationResponse,
   WeeklyRecommendationsParams,
 } from '../types/prediction';
