@@ -164,10 +164,10 @@ def _compute_live_return(df: pd.DataFrame, buy_date: date) -> Dict[str, Any]:
     """以买入日（周一）开盘价为成本，基于「实际返回的交易日」动态计算 1/3/5 日收益。
 
     不再用行号硬编码 (buy_idx+1/+3/+4)，改为扫描买入后每一根 K 线，
-    按「自然日差距」自动归入对应期限：
+    按「自然日差距」自动归入对应期限（期限定义见下方循环注释）：
       - 与 buy_date 差 1~2 天 → return_1d_pct（取第一个满足的，即最早的那根）
-      - 与 buy_date 差 3~4 天 → return_3d_pct
-      - 与 buy_date 差 5~7 天 → return_wk_pct（覆盖周一买~周五卖及节假日顺延）
+      - 与 buy_date 差 3~5 天 → return_3d_pct
+      - 与 buy_date 差 4~8 天 → return_wk_pct（覆盖周五及节假日顺延）
 
     这样无论腾讯返回几天、中间是否停牌，都能正确计算出已有期限的收益。
     """
