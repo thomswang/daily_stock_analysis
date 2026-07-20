@@ -406,3 +406,14 @@ python rank_snapshot.py
 4. **模型自动激活** — 训练完成后新模型自动设为生产模型，旧模型保留可回滚
 5. **ST 股自动剔除** — 训练时自动排除 ST/退市风险股，无需手动处理
 6. **数据表已统一** — 全链路（回填/训练/预测/回测/快照）只用 `stock_daily_ohlcv`；旧 `stock_daily`、`stock_daily_kline` 表及 `backfill.py kline`、`backfill_index.py` 已下线
+
+
+# 更新日志
+python backfill.py baidu --all --no-full --end 2026-07-17 \
+  --progress data/baidu_progress_tail.json_2026-07-17.json --retry 3 --sleep 1.5 --ktype 1 --browser 
+
+python backfill.py baidu --all --no-full --end 2026-07-17 \
+  --progress data/baidu_progress_tail.json_2026-07-17.json --retry 3 --sleep 1.5 --ktype 1 --browser --retry-failed
+
+python backfill.py baidu --symbols "000300" --no-full --end 2026-07-17 \
+  --progress data/baidu_index_tail.json --retry 3 --sleep 1.5 --ktype 1 --browser
